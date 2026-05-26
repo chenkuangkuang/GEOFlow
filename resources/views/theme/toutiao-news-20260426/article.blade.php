@@ -58,7 +58,7 @@
                     <a href="{{ route('site.category', $article->category->slug) }}" class="tt-pill">{{ $article->category->name }}</a>
                 @endif
                 <time datetime="{{ ($article->published_at ?? $article->created_at)?->toAtomString() }}">
-                    {{ ($article->published_at ?? $article->created_at)?->format('Y-m-d') }}
+                    {{ ($article->published_at ?? $article->created_at)?->format('Y-m-d H:i') }}
                 </time>
                 @if($article->author)
                     <span>{{ $article->author->name }}</span>

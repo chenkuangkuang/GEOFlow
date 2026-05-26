@@ -3,6 +3,7 @@
 namespace App\Support\Site;
 
 use App\Models\Article;
+use App\Support\GeoFlow\ArticleSummaryGenerator;
 use App\Support\GeoFlow\ImageUrlNormalizer;
 use League\CommonMark\GithubFlavoredMarkdownConverter;
 
@@ -34,15 +35,7 @@ final class ArticleHtmlPresenter
      */
     public static function stripLeadingTitleHeading(string $content, string $title): string
     {
-        $content = (string) $content;
-        $title = trim($title);
-        if ($title === '') {
-            return $content;
-        }
-
-        $pattern = '/^\s*#\s*'.preg_quote($title, '/').'\s*(?:\r?\n)+/u';
-
-        return (string) preg_replace($pattern, '', $content, 1);
+        return ArticleSummaryGenerator::stripLeadingTitleHeading($content, $title);
     }
 
     /**
@@ -50,20 +43,12 @@ final class ArticleHtmlPresenter
      */
     public static function cardSummary(Article $article, int $limit = 120): string
     {
-        $excerpt = trim((string) $article->excerpt);
-        if ($excerpt !== '') {
-            $excerpt = self::stripLeadingTitleHeading($excerpt, (string) $article->title);
-            $excerpt = preg_replace('/!\[[^\]]*\]\([^)]+\)/u', '', $excerpt) ?? $excerpt;
-            $plain = self::toPlainLine($excerpt);
-
-            return mb_strlen($plain) > $limit ? mb_substr($plain, 0, $limit).'…' : $plain;
-        }
-
-        $body = self::stripLeadingTitleHeading((string) $article->content, (string) $article->title);
-        $body = preg_replace('/!\[[^\]]*\]\([^)]+\)/u', '', $body) ?? $body;
-        $plain = self::toPlainLine($body);
-
-        return mb_strlen($plain) > $limit ? mb_substr($plain, 0, $limit).'…' : $plain;
+        return ArticleSummaryGenerator::bestExcerpt(
+            (string) $article->title,
+            (string) $article->excerpt,
+            (string) $article->content,
+            $limit
+        );
     }
 
     private static function toPlainLine(string $text): string

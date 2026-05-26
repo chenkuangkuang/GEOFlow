@@ -42,7 +42,7 @@
                     <div class="entry-meta article-meta-row flex flex-wrap items-center gap-3 mb-6">
                         <span class="article-meta-chip flex items-center">
                             <i data-lucide="calendar" class="w-4 h-4 mr-1"></i>
-                            {{ __('site.article_published_on', ['date' => $pub?->format('Y-m-d') ?? '']) }}
+                            {{ __('site.article_published_on', ['date' => $pub?->format('Y-m-d H:i') ?? '']) }}
                         </span>
                     </div>
 

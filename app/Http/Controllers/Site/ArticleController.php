@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Site;
 
 use App\Http\Controllers\Controller;
 use App\Models\Article;
+use App\Support\GeoFlow\ArticleSummaryGenerator;
 use App\Support\Site\ArticleHtmlPresenter;
 use App\Support\Site\ArticleStickyAdPicker;
 use App\Support\Site\SiteSettingsBag;
@@ -37,10 +38,7 @@ class ArticleController extends Controller
 
         $rawContent = (string) $article->content;
         $body = ArticleHtmlPresenter::stripLeadingTitleHeading($rawContent, (string) $article->title);
-        $excerpt = trim((string) $article->excerpt);
-        if ($excerpt !== '') {
-            $excerpt = ArticleHtmlPresenter::stripLeadingTitleHeading($excerpt, (string) $article->title);
-        }
+        $excerpt = ArticleSummaryGenerator::bestExcerpt((string) $article->title, (string) $article->excerpt, $rawContent, 220);
 
         $contentHtml = ArticleHtmlPresenter::markdownToHtml($body);
 

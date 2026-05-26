@@ -20,7 +20,7 @@
             @if($article->category)
                 <a href="{{ route('site.category', $article->category->slug) }}" class="ne-pill">{{ $article->category->name }}</a>
             @endif
-            <time datetime="{{ $pub?->toAtomString() }}">{{ $pub?->format('Y-m-d') }}</time>
+            <time datetime="{{ $pub?->toAtomString() }}">{{ $pub?->format('Y-m-d H:i') }}</time>
         </div>
         <h2 class="ne-article-title">
             <a href="{{ route('site.article', $article->slug) }}">{{ $article->title }}</a>

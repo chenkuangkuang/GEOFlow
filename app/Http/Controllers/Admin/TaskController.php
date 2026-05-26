@@ -190,6 +190,13 @@ class TaskController extends Controller
                 'image_library_id' => (string) (($task['image_library_id'] ?? '') ?: ''),
                 'image_count' => (string) ($task['image_count'] ?? 0),
                 'knowledge_base_id' => (string) (($task['knowledge_base_id'] ?? '') ?: ''),
+                'article_type_mode' => (string) ($task['article_type_mode'] ?? 'smart_random'),
+                'article_type_options' => is_array($task['article_type_options'] ?? null) ? array_values($task['article_type_options']) : [],
+                'writing_style_mode' => (string) ($task['writing_style_mode'] ?? 'random'),
+                'writing_style_options' => is_array($task['writing_style_options'] ?? null) ? array_values($task['writing_style_options']) : [],
+                'length_mode' => (string) ($task['length_mode'] ?? 'short'),
+                'length_min' => (string) (($task['length_min'] ?? '') ?: ''),
+                'length_max' => (string) (($task['length_max'] ?? '') ?: ''),
                 'fixed_category_id' => (string) (($task['fixed_category_id'] ?? '') ?: ''),
                 'status' => (string) ($task['status'] ?? 'active'),
                 'article_limit' => (string) ($task['article_limit'] ?? 10),
@@ -496,6 +503,13 @@ class TaskController extends Controller
      *     image_library_id: int|null,
      *     image_count: int|null,
      *     knowledge_base_id: int|null,
+     *     article_type_mode: string|null,
+     *     article_type_options: array<int,string>|null,
+     *     writing_style_mode: string|null,
+     *     writing_style_options: array<int,string>|null,
+     *     length_mode: string|null,
+     *     length_min: int|null,
+     *     length_max: int|null,
      *     fixed_category_id: int|null,
      *     status: string,
      *     article_limit: int|null,
@@ -516,6 +530,15 @@ class TaskController extends Controller
             'image_library_id' => ['nullable', 'integer', 'min:1'],
             'image_count' => ['nullable', 'integer', 'min:0', 'max:5'],
             'knowledge_base_id' => ['nullable', 'integer', 'min:1'],
+            'article_type_mode' => ['nullable', 'string', 'in:fixed,random,smart_random'],
+            'article_type_options' => ['nullable', 'array'],
+            'article_type_options.*' => ['string', 'in:explainer,comparison,decision,tutorial'],
+            'writing_style_mode' => ['nullable', 'string', 'in:fixed,random'],
+            'writing_style_options' => ['nullable', 'array'],
+            'writing_style_options.*' => ['string', 'in:professional,consultant,editorial,educational,friendly'],
+            'length_mode' => ['nullable', 'string', 'in:short,medium,long,custom'],
+            'length_min' => ['nullable', 'integer', 'min:120', 'max:5000'],
+            'length_max' => ['nullable', 'integer', 'min:120', 'max:5000'],
             'fixed_category_id' => ['nullable', 'integer', 'min:1'],
             'status' => ['required', 'string', 'in:active,paused'],
             'article_limit' => ['nullable', 'integer', 'min:1', 'max:99999'],
@@ -546,6 +569,13 @@ class TaskController extends Controller
             'ai_model_id' => (int) $payload['ai_model_id'],
             'author_id' => isset($payload['author_id']) && (int) $payload['author_id'] > 0 ? (int) $payload['author_id'] : null,
             'knowledge_base_id' => isset($payload['knowledge_base_id']) ? (int) $payload['knowledge_base_id'] : null,
+            'article_type_mode' => (string) ($payload['article_type_mode'] ?? 'smart_random'),
+            'article_type_options' => $this->normalizeTaskMultiSelect($payload['article_type_options'] ?? null, ['explainer', 'comparison', 'decision', 'tutorial']),
+            'writing_style_mode' => (string) ($payload['writing_style_mode'] ?? 'random'),
+            'writing_style_options' => $this->normalizeTaskMultiSelect($payload['writing_style_options'] ?? null, ['professional', 'consultant', 'editorial', 'educational', 'friendly']),
+            'length_mode' => (string) ($payload['length_mode'] ?? 'short'),
+            'length_min' => isset($payload['length_min']) ? (int) $payload['length_min'] : null,
+            'length_max' => isset($payload['length_max']) ? (int) $payload['length_max'] : null,
             'fixed_category_id' => isset($payload['fixed_category_id']) ? (int) $payload['fixed_category_id'] : null,
             'status' => (string) $payload['status'],
             'article_limit' => (int) ($payload['article_limit'] ?? 10),
@@ -558,5 +588,24 @@ class TaskController extends Controller
             'auto_keywords' => $request->boolean('auto_keywords') ? 1 : 0,
             'auto_description' => $request->boolean('auto_description') ? 1 : 0,
         ];
+    }
+
+    /**
+     * @param  mixed  $values
+     * @param  list<string>  $allowed
+     * @return list<string>
+     */
+    private function normalizeTaskMultiSelect(mixed $values, array $allowed): array
+    {
+        $items = is_array($values) ? $values : [];
+        $normalized = [];
+        foreach ($items as $value) {
+            $item = trim((string) $value);
+            if ($item !== '' && in_array($item, $allowed, true) && ! in_array($item, $normalized, true)) {
+                $normalized[] = $item;
+            }
+        }
+
+        return $normalized;
     }
 }

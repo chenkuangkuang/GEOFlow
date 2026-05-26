@@ -20,7 +20,7 @@
                 @endif
             </div>
             <time class="text-sm text-gray-500" datetime="{{ $pub?->toAtomString() }}">
-                {{ $pub?->format('Y-m-d') }}
+                {{ $pub?->format('Y-m-d H:i') }}
             </time>
         </div>
 

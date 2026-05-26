@@ -15,6 +15,7 @@ use App\Models\Prompt;
 use App\Models\Task;
 use App\Models\Title;
 use App\Support\GeoFlow\ApiKeyCrypto;
+use App\Support\GeoFlow\ArticleSummaryGenerator;
 use App\Support\GeoFlow\ArticleWorkflow;
 use App\Support\GeoFlow\ImageUrlNormalizer;
 use App\Support\GeoFlow\OpenAiRuntimeProvider;
@@ -75,22 +76,24 @@ class WorkerExecutionService
         $prompt = $task->prompt_id ? Prompt::query()->find((int) $task->prompt_id) : null;
 
         $keyword = (string) ($titleRow->keyword ?? '');
-        $knowledgeContext = $this->resolveKnowledgeContext($task, (string) $titleRow->title, $keyword);
-        $contentPrompt = $this->buildContentPrompt((string) $titleRow->title, $keyword, $prompt?->content, $knowledgeContext);
+        $generationProfile = $this->resolveGenerationProfile($task, (string) $titleRow->title, $keyword);
+        $effectiveTitle = $this->rewriteGeneratedTitle((string) $titleRow->title, $keyword, $generationProfile);
+        $knowledgeContext = $this->resolveKnowledgeContext($task, $effectiveTitle, $keyword);
+        $contentPrompt = $this->buildContentPrompt($effectiveTitle, $keyword, $prompt?->content, $knowledgeContext, $generationProfile);
         $generation = $this->generateContentWithModelSelection($task, $contentPrompt);
         $aiModel = $generation['model'];
         $generatedContent = $generation['content'];
         $imageResult = $this->insertTaskImagesIntoContent($task, $generatedContent);
         $content = $imageResult['content'];
         $selectedImages = $imageResult['images'];
-        $excerpt = $this->buildExcerpt($content);
+        $excerpt = $this->buildExcerpt($content, $effectiveTitle);
         $workflow = [
             'status' => 'draft',
             'review_status' => (int) ($task->need_review ?? 1) === 1 ? 'pending' : 'approved',
             'published_at' => null,
         ];
 
-        $articleId = DB::transaction(function () use ($task, $titleRow, $author, $category, $keyword, $content, $excerpt, $workflow, $selectedImages): int {
+        $articleId = DB::transaction(function () use ($task, $titleRow, $effectiveTitle, $author, $category, $keyword, $content, $excerpt, $workflow, $selectedImages): int {
             $freshTask = Task::query()
                 ->whereKey((int) $task->id)
                 ->lockForUpdate()
@@ -104,8 +107,8 @@ class WorkerExecutionService
             }
 
             $article = Article::query()->create([
-                'title' => (string) $titleRow->title,
-                'slug' => ArticleWorkflow::generateUniqueSlug((string) $titleRow->title),
+                'title' => $effectiveTitle,
+                'slug' => ArticleWorkflow::generateUniqueSlug($effectiveTitle),
                 'excerpt' => $excerpt,
                 'content' => $content,
                 'category_id' => $category?->id,
@@ -153,7 +156,7 @@ class WorkerExecutionService
 
         return [
             'article_id' => $articleId,
-            'title' => (string) $titleRow->title,
+            'title' => $effectiveTitle,
             'message' => '草稿生成成功',
             'meta' => [
                 'task_id' => (int) $task->id,
@@ -164,6 +167,11 @@ class WorkerExecutionService
                 'knowledge_length' => mb_strlen($knowledgeContext, 'UTF-8'),
                 'image_count' => count($selectedImages),
                 'model_selection_mode' => (string) ($task->model_selection_mode ?? 'fixed'),
+                'article_type' => $generationProfile['article_type'],
+                'writing_style' => $generationProfile['writing_style'],
+                'length_mode' => $generationProfile['length_mode'],
+                'length_min' => $generationProfile['length_min'],
+                'length_max' => $generationProfile['length_max'],
                 'used_model_id' => (int) $aiModel->id,
                 'used_model_name' => (string) $aiModel->name,
                 'model_attempts' => $generation['attempts'],
@@ -469,27 +477,139 @@ class WorkerExecutionService
     /**
      * 构造正文提示词：优先精确替换变量；无变量的自定义提示词自动补齐任务上下文。
      */
-    private function buildContentPrompt(string $title, string $keyword, ?string $promptContent, string $knowledgeContext): string
+    private function buildContentPrompt(string $title, string $keyword, ?string $promptContent, string $knowledgeContext, array $generationProfile = []): string
     {
-        $prompt = trim((string) $promptContent);
-        $isFallbackPrompt = false;
-        if ($prompt === '') {
-            $prompt = "请围绕标题“{$title}”和关键词“{$keyword}”生成一篇结构清晰、语言自然的中文文章。";
-            $isFallbackPrompt = true;
-        }
-
-        $hasExplicitContextVariables = $isFallbackPrompt || $this->promptHasKnownContextVariables($prompt);
-        $renderedPrompt = $this->renderPromptTemplate($prompt, [
+        $customPrompt = trim((string) $promptContent);
+        $hasExplicitContextVariables = $customPrompt !== '' && $this->promptHasKnownContextVariables($customPrompt);
+        $renderedCustomPrompt = $customPrompt !== '' ? $this->renderPromptTemplate($customPrompt, [
             'title' => $title,
             'keyword' => $keyword,
             'knowledge' => $knowledgeContext,
-        ]);
+        ]) : '';
 
-        if (! $hasExplicitContextVariables) {
-            $renderedPrompt = $this->appendSmartPromptContext($renderedPrompt, $title, $keyword, $knowledgeContext);
+        $renderedPrompt = $this->composeAdaptiveBasePrompt($title, $keyword, $knowledgeContext, $generationProfile, ! $hasExplicitContextVariables);
+        if ($renderedCustomPrompt !== '') {
+            $renderedPrompt .= "\n\n".$this->appendCustomPromptReference($renderedCustomPrompt, $generationProfile);
         }
 
+        $renderedPrompt = $this->appendWritingProfileGuidance($renderedPrompt, $generationProfile);
+        $renderedPrompt = $this->appendLengthGuidance($renderedPrompt, $generationProfile);
+
         return trim($renderedPrompt)."\n\n".$this->finalPromptInstruction($renderedPrompt);
+    }
+
+    /**
+     * @param  array{article_type?:string,writing_style?:string,length_mode?:string,length_min?:int|null,length_max?:int|null}  $generationProfile
+     */
+    private function composeAdaptiveBasePrompt(string $title, string $keyword, string $knowledgeContext, array $generationProfile, bool $includeTaskContext = true): string
+    {
+        $articleType = (string) ($generationProfile['article_type'] ?? 'explainer');
+
+        if ($this->isLikelyEnglishPrompt($keyword.' '.$title.' '.$knowledgeContext)) {
+            $lines = [
+                '[Role]',
+                'You are a sharp GEO content editor. Write concise, information-dense, publishable Markdown that is specific, useful, and easy for AI systems to extract.',
+                '',
+            ];
+            if ($includeTaskContext) {
+                $lines[] = 'Task context:';
+                $lines[] = '- Article title: '.$title;
+                if (trim($keyword) !== '') {
+                    $lines[] = '- Core keyword: '.$keyword;
+                }
+                if (trim($knowledgeContext) !== '') {
+                    $lines[] = '- Reference knowledge:';
+                    $lines[] = $knowledgeContext;
+                }
+                $lines[] = '';
+            }
+            $lines[] = '[Core requirements]';
+            $lines[] = '- Lead with conclusions, then explain them.';
+            $lines[] = '- Be concrete, specific, and scenario-aware. Avoid generic filler and abstract fluff.';
+            $lines[] = '- Every section must add a clear piece of information: a criterion, example, step, trade-off, caution, or boundary.';
+            $lines[] = '- Use headings, bullets, and tables only when they increase information density.';
+            $lines[] = '- Do not write like a formal report unless the topic truly requires it.';
+            $lines[] = '';
+            $lines[] = '[Structure requirements]';
+            foreach ($this->englishAdaptiveStructure($articleType, $title) as $line) {
+                $lines[] = $line;
+            }
+
+            return implode("\n", $lines);
+        }
+
+        $lines = [
+            '【角色】',
+            '你是一名擅长 GEO 内容生产的资深编辑。请输出简短、有趣、信息密度高、可直接发布的 Markdown 文章。',
+            '',
+        ];
+        if ($includeTaskContext) {
+            $lines[] = '【任务上下文】';
+            $lines[] = '- 文章标题：'.$title;
+            if (trim($keyword) !== '') {
+                $lines[] = '- 核心关键词：'.$keyword;
+            }
+            if (trim($knowledgeContext) !== '') {
+                $lines[] = '- 参考知识：';
+                $lines[] = $knowledgeContext;
+            }
+            $lines[] = '';
+        }
+        $lines[] = '【底层要求】';
+        $lines[] = '- 先给结论，再做解释。';
+        $lines[] = '- 表达要深入、具体，不要泛泛而谈，不要写成空洞报告。';
+        $lines[] = '- 每个小节都必须提供明确增量信息，例如判断依据、真实场景、对比维度、步骤、边界或注意事项。';
+        $lines[] = '- 能用列表或表格讲清的内容，不要硬写成冗长大段。';
+        $lines[] = '- 除非主题真的需要，不要写成“行业发展趋势报告”“分析与研究”那种正式报告体。';
+        $lines[] = '';
+        $lines[] = '【结构要求】';
+        foreach ($this->chineseAdaptiveStructure($articleType, $title) as $line) {
+            $lines[] = $line;
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * @param  array{article_type?:string,writing_style?:string,length_mode?:string,length_min?:int|null,length_max?:int|null}  $generationProfile
+     */
+    private function appendCustomPromptReference(string $customPrompt, array $generationProfile): string
+    {
+        if ($customPrompt === '') {
+            return '';
+        }
+
+        if ($this->isLikelyEnglishPrompt($customPrompt)) {
+            return "[Additional prompt reference]\nUse the following as supplemental guidance only when it does not conflict with the article type, style, brevity, and specificity requirements above:\n".$customPrompt;
+        }
+
+        return "【补充提示】\n以下内容仅作为补充参考；如果与上面的文章类型、语言风格、短篇高信息密度要求冲突，以上面的要求为准：\n".$customPrompt;
+    }
+
+    /**
+     * @return array{article_type:string,writing_style:string,length_mode:string,length_min:int|null,length_max:int|null}
+     */
+    private function resolveGenerationProfile(Task $task, string $title, string $keyword): array
+    {
+        $allowedTypes = $this->normalizeTaskOptions($task->article_type_options, [
+            'explainer', 'comparison', 'decision', 'tutorial',
+        ]);
+        $allowedStyles = $this->normalizeTaskOptions($task->writing_style_options, [
+            'professional', 'consultant', 'editorial', 'educational', 'friendly',
+        ]);
+
+        $articleTypeMode = trim((string) ($task->article_type_mode ?? 'smart_random'));
+        $writingStyleMode = trim((string) ($task->writing_style_mode ?? 'random'));
+        $lengthMode = trim((string) ($task->length_mode ?? 'short'));
+        [$lengthMin, $lengthMax] = $this->resolveLengthRange($lengthMode, $task);
+
+        return [
+            'article_type' => $this->pickArticleType($articleTypeMode, $allowedTypes, $title, $keyword),
+            'writing_style' => $this->pickWritingStyle($writingStyleMode, $allowedStyles),
+            'length_mode' => in_array($lengthMode, ['short', 'medium', 'long', 'custom'], true) ? $lengthMode : 'short',
+            'length_min' => $lengthMin,
+            'length_max' => $lengthMax,
+        ];
     }
 
     private function promptHasKnownContextVariables(string $prompt): bool
@@ -571,6 +691,94 @@ class WorkerExecutionService
             $lines[] = '- 参考知识：';
             $lines[] = $knowledgeContext;
         }
+
+        return trim($prompt)."\n\n".implode("\n", $lines);
+    }
+
+    /**
+     * @param  array{article_type?:string,writing_style?:string,length_mode?:string,length_min?:int|null,length_max?:int|null}  $writingProfile
+     */
+    private function appendWritingProfileGuidance(string $prompt, array $writingProfile): string
+    {
+        $articleType = trim((string) ($writingProfile['article_type'] ?? ''));
+        $writingStyle = trim((string) ($writingProfile['writing_style'] ?? ''));
+        if ($articleType === '' && $writingStyle === '') {
+            return $prompt;
+        }
+
+        if ($this->isLikelyEnglishPrompt($prompt)) {
+            $lines = ['[Writing Profile]'];
+            if ($articleType !== '') {
+                $lines[] = '- Article type: '.$this->englishArticleTypeLabel($articleType);
+                foreach ($this->englishArticleTypeRules($articleType) as $rule) {
+                    $lines[] = '  - '.$rule;
+                }
+            }
+            if ($writingStyle !== '') {
+                $lines[] = '- Writing style: '.$this->englishWritingStyleLabel($writingStyle);
+                foreach ($this->englishWritingStyleRules($writingStyle) as $rule) {
+                    $lines[] = '  - '.$rule;
+                }
+            }
+
+            return trim($prompt)."\n\n".implode("\n", $lines);
+        }
+
+        $lines = ['【写作画像】'];
+        if ($articleType !== '') {
+            $lines[] = '- 文章类型：'.$this->chineseArticleTypeLabel($articleType);
+            foreach ($this->chineseArticleTypeRules($articleType) as $rule) {
+                $lines[] = '  - '.$rule;
+            }
+        }
+        if ($writingStyle !== '') {
+            $lines[] = '- 语言风格：'.$this->chineseWritingStyleLabel($writingStyle);
+            foreach ($this->chineseWritingStyleRules($writingStyle) as $rule) {
+                $lines[] = '  - '.$rule;
+            }
+        }
+
+        return trim($prompt)."\n\n".implode("\n", $lines);
+    }
+
+    /**
+     * @param  array{length_mode?:string,length_min?:int|null,length_max?:int|null}  $generationProfile
+     */
+    private function appendLengthGuidance(string $prompt, array $generationProfile): string
+    {
+        $lengthMode = trim((string) ($generationProfile['length_mode'] ?? 'short'));
+        $lengthMin = isset($generationProfile['length_min']) ? (int) $generationProfile['length_min'] : null;
+        $lengthMax = isset($generationProfile['length_max']) ? (int) $generationProfile['length_max'] : null;
+        if ($lengthMin === null || $lengthMax === null) {
+            [$defaultMin, $defaultMax] = $this->defaultLengthRange($lengthMode);
+            $lengthMin ??= $defaultMin;
+            $lengthMax ??= $defaultMax;
+        }
+        if ($lengthMin === null || $lengthMax === null) {
+            return $prompt;
+        }
+
+        if ($this->isLikelyEnglishPrompt($prompt)) {
+            $lines = [
+                '[Length and Density]',
+                '- Target length: about '.$lengthMin.'-'.$lengthMax.' words.',
+                '- Keep the article concise, information-dense, and specific.',
+                '- Do not pad with generic background, repetitive transitions, or obvious filler.',
+                '- Every paragraph should add a concrete insight, example, criterion, step, or caution.',
+                '- Be detailed in substance, not verbose in wording. Avoid vague high-level statements.',
+            ];
+
+            return trim($prompt)."\n\n".implode("\n", $lines);
+        }
+
+        $lines = [
+            '【篇幅控制】',
+            '- 目标篇幅：约 '.$lengthMin.'-'.$lengthMax.' 字。',
+            '- 尽量保持短小精悍、信息密度高、表达具体。',
+            '- 不要为了凑字数补背景、补空话、补重复过渡句。',
+            '- 每一段都提供新的有效信息，例如判断依据、场景、步骤、边界或注意事项。',
+            '- 要深入具体，不要泛泛而谈；宁可写短，也不要写成啰嗦的 AI 套话长文。',
+        ];
 
         return trim($prompt)."\n\n".implode("\n", $lines);
     }
@@ -808,7 +1016,11 @@ class WorkerExecutionService
 
         $driver = OpenAiRuntimeProvider::resolveChatDriver($providerUrl, (string) ($aiModel->model_id ?? ''));
         $providerName = OpenAiRuntimeProvider::registerProvider('worker', $driver, $providerUrl, $apiKey);
-        $agent = new MarkdownContentWriterAgent;
+        $agent = new MarkdownContentWriterAgent(
+            instructions: $this->isLikelyEnglishPrompt($contentPrompt)
+                ? 'You are a professional English content writer. Output a polished, publishable Markdown article only.'
+                : '你是专业中文写作助手，请输出高质量、可发布的 Markdown 文章。'
+        );
 
         try {
             $response = $agent->prompt($contentPrompt, [], $providerName, (string) ($aiModel->model_id ?? ''));
@@ -840,16 +1052,446 @@ class WorkerExecutionService
     /**
      * 从正文提取摘要，避免把完整提示词原文当摘要。
      */
-    private function buildExcerpt(string $content): string
+    private function buildExcerpt(string $content, string $title = ''): string
     {
-        $plain = preg_replace('/[`#>*_\-\[\]\(\)]/u', ' ', $content) ?: $content;
-        $plain = preg_replace('/\s+/u', ' ', $plain) ?: $plain;
-        $plain = trim($plain);
-        if ($plain === '') {
+        $excerpt = ArticleSummaryGenerator::fromMarkdown($content, $title, 180);
+        if ($excerpt === '') {
             return 'AI 生成内容摘要';
         }
 
-        return mb_substr($plain, 0, 180);
+        return $excerpt;
+    }
+
+    /**
+     * @param  array<int, string>|mixed  $rawOptions
+     * @param  list<string>  $defaults
+     * @return list<string>
+     */
+    private function normalizeTaskOptions(mixed $rawOptions, array $defaults): array
+    {
+        $options = is_array($rawOptions) ? $rawOptions : [];
+        if (! is_array($rawOptions) && is_string($rawOptions) && trim($rawOptions) !== '') {
+            $decoded = json_decode($rawOptions, true);
+            if (is_array($decoded)) {
+                $options = $decoded;
+            }
+        }
+        $filtered = [];
+        foreach ($options as $option) {
+            $value = trim((string) $option);
+            if ($value !== '' && in_array($value, $defaults, true) && ! in_array($value, $filtered, true)) {
+                $filtered[] = $value;
+            }
+        }
+
+        return $filtered !== [] ? $filtered : $defaults;
+    }
+
+    /**
+     * @param  list<string>  $allowedTypes
+     */
+    private function pickArticleType(string $mode, array $allowedTypes, string $title, string $keyword): string
+    {
+        if ($mode === 'fixed') {
+            return $allowedTypes[0] ?? 'explainer';
+        }
+
+        if ($mode === 'smart_random') {
+            $routed = array_values(array_intersect($this->routeArticleTypes($title, $keyword), $allowedTypes));
+            if ($routed !== []) {
+                return $routed[0];
+            }
+        }
+
+        return $allowedTypes[random_int(0, count($allowedTypes) - 1)] ?? 'explainer';
+    }
+
+    /**
+     * @param  list<string>  $allowedStyles
+     */
+    private function pickWritingStyle(string $mode, array $allowedStyles): string
+    {
+        if ($mode === 'fixed') {
+            return $allowedStyles[0] ?? 'professional';
+        }
+
+        return $allowedStyles[random_int(0, count($allowedStyles) - 1)] ?? 'professional';
+    }
+
+    /**
+     * @return array{0:int|null,1:int|null}
+     */
+    private function resolveLengthRange(string $lengthMode, Task $task): array
+    {
+        if ($lengthMode === 'custom') {
+            $min = max(120, (int) ($task->length_min ?? 0));
+            $max = max($min, (int) ($task->length_max ?? 0));
+
+            return [$min > 0 ? $min : null, $max > 0 ? $max : null];
+        }
+
+        return $this->defaultLengthRange($lengthMode);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function chineseAdaptiveStructure(string $articleType, string $title): array
+    {
+        return match ($articleType) {
+            'comparison' => [
+                '# '.$title,
+                '## 先看结论',
+                '- 用 3-5 条要点直接说明差异、取舍和推荐判断。',
+                '## 关键差异',
+                '## 适合谁 / 不适合谁',
+                '## 快速对比表',
+                '## 最终建议',
+            ],
+            'decision' => [
+                '# '.$title,
+                '## 先说结论',
+                '- 直接告诉读者什么人适合、什么人不适合、优先怎么选。',
+                '## 决策标准',
+                '## 不同场景怎么选',
+                '## 容易踩坑的点',
+                '## 最终建议',
+            ],
+            'tutorial' => [
+                '# '.$title,
+                '## 先看结果',
+                '- 先告诉读者做完能得到什么，以及适合谁照着做。',
+                '## 开始前要准备什么',
+                '## 具体步骤',
+                '## 常见错误与避坑',
+                '## 最后总结',
+            ],
+            default => [
+                '# '.$title,
+                '## 核心结论',
+                '- 用 3-5 条短要点先讲明白这个主题最重要的判断。',
+                '## 它到底是什么',
+                '## 为什么这件事重要',
+                '## 常见误区 / 关键边界',
+                '## 最后总结',
+            ],
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function englishAdaptiveStructure(string $articleType, string $title): array
+    {
+        return match ($articleType) {
+            'comparison' => [
+                '# '.$title,
+                '## Quick Answer',
+                '- Use 3-5 bullets to summarize the key differences, trade-offs, and recommendation.',
+                '## Key Differences',
+                '## Who Each Option Fits',
+                '## Comparison Table',
+                '## Final Recommendation',
+            ],
+            'decision' => [
+                '# '.$title,
+                '## Quick Answer',
+                '- Tell the reader who should choose what, and why.',
+                '## Decision Criteria',
+                '## Which Option Fits Which Scenario',
+                '## Common Mistakes',
+                '## Final Recommendation',
+            ],
+            'tutorial' => [
+                '# '.$title,
+                '## What You Will Achieve',
+                '- Clarify the outcome and who this guide is for.',
+                '## What To Prepare First',
+                '## Step-by-Step Guide',
+                '## Common Mistakes and Fixes',
+                '## Final Notes',
+            ],
+            default => [
+                '# '.$title,
+                '## Key Takeaways',
+                '- Summarize the most important judgments in 3-5 bullets.',
+                '## What It Actually Is',
+                '## Why It Matters',
+                '## Misconceptions and Boundaries',
+                '## Final Notes',
+            ],
+        };
+    }
+
+    /**
+     * @param  array{article_type?:string,writing_style?:string}  $generationProfile
+     */
+    private function rewriteGeneratedTitle(string $title, string $keyword, array $generationProfile): string
+    {
+        $original = trim($title);
+        if ($original === '') {
+            return trim($keyword) !== '' ? trim($keyword) : '未命名文章';
+        }
+
+        if (! preg_match('/(报告|分析与研究|深度分析|专业见解|行业发展趋势)/u', $original)) {
+            return $original;
+        }
+
+        $subject = trim($keyword) !== '' ? trim($keyword) : $this->extractTitleSubject($original);
+        if ($subject === '') {
+            $subject = $original;
+        }
+
+        return match ((string) ($generationProfile['article_type'] ?? 'explainer')) {
+            'comparison' => preg_match('/\b(vs|VS|versus)\b/u', $original) === 1 || str_contains($original, '对比')
+                ? $original
+                : $subject.'怎么选？',
+            'decision' => $subject.'怎么选？',
+            'tutorial' => $subject.'怎么做？',
+            default => $subject.'到底是什么？',
+        };
+    }
+
+    private function extractTitleSubject(string $title): string
+    {
+        $subject = trim((string) preg_replace('/(行业发展趋势报告|深度分析与研究|深度分析|分析与研究|专业见解|报告|研究)$/u', '', $title));
+        $subject = trim((string) preg_replace('/^关于/u', '', $subject));
+
+        return trim($subject, " \t\n\r\0\x0B：:-");
+    }
+
+    /**
+     * @return array{0:int|null,1:int|null}
+     */
+    private function defaultLengthRange(string $lengthMode): array
+    {
+        return match ($lengthMode) {
+            'medium' => [600, 1000],
+            'long' => [1000, 1600],
+            'short' => [400, 800],
+            default => [null, null],
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function routeArticleTypes(string $title, string $keyword): array
+    {
+        $haystack = mb_strtolower(trim($title.' '.$keyword), 'UTF-8');
+        $types = [];
+
+        if (
+            str_contains($haystack, ' versus ')
+            || str_contains($haystack, ' vs ')
+            || str_starts_with($haystack, 'vs ')
+            || str_ends_with($haystack, ' vs')
+            || str_contains($haystack, ' compare ')
+            || str_contains($haystack, 'comparison')
+            || str_contains($haystack, '对比')
+            || str_contains($haystack, '区别')
+            || str_contains($haystack, '哪个好')
+        ) {
+            $types[] = 'comparison';
+        }
+
+        if (
+            str_contains($haystack, ' best ')
+            || str_starts_with($haystack, 'best ')
+            || str_contains($haystack, ' top ')
+            || str_starts_with($haystack, 'top ')
+            || str_contains($haystack, ' worth ')
+            || str_contains($haystack, ' choose ')
+            || str_contains($haystack, ' selection ')
+            || str_contains($haystack, ' buy ')
+            || str_contains($haystack, '推荐')
+            || str_contains($haystack, '排行')
+            || str_contains($haystack, '排名')
+            || str_contains($haystack, '怎么选')
+            || str_contains($haystack, '值不值得')
+        ) {
+            $types[] = 'decision';
+        }
+
+        if (
+            str_contains($haystack, 'how to')
+            || str_contains($haystack, ' tutorial ')
+            || str_starts_with($haystack, 'tutorial ')
+            || str_contains($haystack, ' guide ')
+            || str_contains($haystack, ' setup ')
+            || str_contains($haystack, ' install ')
+            || str_contains($haystack, ' configure ')
+            || str_contains($haystack, '教程')
+            || str_contains($haystack, '步骤')
+            || str_contains($haystack, '指南')
+            || str_contains($haystack, '如何')
+            || str_contains($haystack, '怎么')
+            || str_contains($haystack, '配置')
+            || str_contains($haystack, '搭建')
+            || str_contains($haystack, '安装')
+        ) {
+            $types[] = 'tutorial';
+        }
+
+        if ($types === []) {
+            $types[] = 'explainer';
+        }
+
+        if (! in_array('explainer', $types, true)) {
+            $types[] = 'explainer';
+        }
+
+        return array_values(array_unique($types));
+    }
+
+    private function englishArticleTypeLabel(string $articleType): string
+    {
+        return match ($articleType) {
+            'comparison' => 'Comparison article',
+            'decision' => 'Decision-making article',
+            'tutorial' => 'Tutorial article',
+            default => 'Explainer article',
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function englishArticleTypeRules(string $articleType): array
+    {
+        return match ($articleType) {
+            'comparison' => [
+                'Highlight meaningful differences, trade-offs, and decision criteria.',
+                'Use tables or side-by-side bullets when they improve clarity.',
+            ],
+            'decision' => [
+                'Guide the reader toward a practical choice based on scenarios and constraints.',
+                'State who should choose which option and under what conditions.',
+            ],
+            'tutorial' => [
+                'Organize the article around actionable steps, prerequisites, and pitfalls.',
+                'Explain why each step matters instead of listing commands mechanically.',
+            ],
+            default => [
+                'Clarify what the topic is, why it matters, and how readers should understand it.',
+                'Prioritize explanation, definitions, context, and common misconceptions.',
+            ],
+        };
+    }
+
+    private function englishWritingStyleLabel(string $writingStyle): string
+    {
+        return match ($writingStyle) {
+            'consultant' => 'Consultative',
+            'editorial' => 'Editorial analysis',
+            'educational' => 'Teaching-focused',
+            'friendly' => 'Friendly and approachable',
+            default => 'Professional and trustworthy',
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function englishWritingStyleRules(string $writingStyle): array
+    {
+        return match ($writingStyle) {
+            'consultant' => [
+                'Write like an advisor helping a business team evaluate options.',
+                'Favor practical judgment, trade-offs, and operational implications.',
+            ],
+            'editorial' => [
+                'Write like a sharp industry analyst with clear framing and synthesis.',
+                'Keep the tone restrained and evidence-aware, not sensational.',
+            ],
+            'educational' => [
+                'Break down ideas patiently so a motivated reader can learn step by step.',
+                'Use definitions, examples, and transitions that reduce cognitive load.',
+            ],
+            'friendly' => [
+                'Keep the tone warm, clear, and easy to follow without becoming casual fluff.',
+                'Prefer concrete sentences over jargon-heavy phrasing.',
+            ],
+            default => [
+                'Keep the tone precise, credible, and business-ready.',
+                'Use clean, direct sentences instead of decorative language.',
+            ],
+        };
+    }
+
+    private function chineseArticleTypeLabel(string $articleType): string
+    {
+        return match ($articleType) {
+            'comparison' => '比较型',
+            'decision' => '决策型',
+            'tutorial' => '教程型',
+            default => '解释型',
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function chineseArticleTypeRules(string $articleType): array
+    {
+        return match ($articleType) {
+            'comparison' => [
+                '重点写清差异点、取舍条件和比较维度，不要只做平铺罗列。',
+                '适合用表格或并列清单帮助读者快速抓住区别。',
+            ],
+            'decision' => [
+                '重点帮助读者做选择，要说明什么场景适合什么方案。',
+                '结论要面向行动，明确推荐逻辑和适用边界。',
+            ],
+            'tutorial' => [
+                '正文要围绕步骤、前置条件、关键细节和常见坑点展开。',
+                '不仅写怎么做，还要解释每一步为什么重要。',
+            ],
+            default => [
+                '重点解释概念、背景、原理和常见误区，帮助读者真正理解主题。',
+                '优先做清晰拆解，而不是急着下购买或排行结论。',
+            ],
+        };
+    }
+
+    private function chineseWritingStyleLabel(string $writingStyle): string
+    {
+        return match ($writingStyle) {
+            'consultant' => '咨询顾问型',
+            'editorial' => '媒体解读型',
+            'educational' => '教学拆解型',
+            'friendly' => '口语亲和型',
+            default => '专业可信型',
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function chineseWritingStyleRules(string $writingStyle): array
+    {
+        return match ($writingStyle) {
+            'consultant' => [
+                '语气像在给团队做方案建议，强调判断、取舍和业务影响。',
+                '多写场景建议和决策依据，少写空泛修辞。',
+            ],
+            'editorial' => [
+                '语气像行业编辑或分析师，擅长归纳趋势和提炼重点。',
+                '保持克制，不要写成夸张营销稿。',
+            ],
+            'educational' => [
+                '语气像耐心讲解的老师，拆步骤、讲例子、降低理解门槛。',
+                '段落过渡要顺，让读者能顺着逻辑一路看懂。',
+            ],
+            'friendly' => [
+                '语气亲和、好懂，但不要口水化，也不要牺牲专业度。',
+                '多用直白句式，减少过度抽象的表达。',
+            ],
+            default => [
+                '语气专业、稳重、可信，适合商业和行业内容场景。',
+                '优先用清晰结论和事实支撑，而不是花哨表达。',
+            ],
+        };
     }
 
     private function sanitizeGeneratedContent(string $content): string

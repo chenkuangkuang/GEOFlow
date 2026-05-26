@@ -8,6 +8,7 @@ use App\Models\Category;
 use App\Models\SiteSetting;
 use App\Support\Site\ArticleHtmlPresenter;
 use App\Support\Site\SiteSettingsBag;
+use Illuminate\Support\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -66,6 +67,41 @@ MD);
             ->assertSee('src="/storage/uploads/images/2026/04/demo.png"', false)
             ->assertSee('<table class="article-table">', false)
             ->assertDontSee('333.png', false);
+    }
+
+    public function test_article_page_uses_smart_excerpt_instead_of_title_echo(): void
+    {
+        $category = Category::query()->create([
+            'name' => '科技资讯',
+            'slug' => 'tech-smart-excerpt',
+        ]);
+        $author = Author::query()->create([
+            'name' => 'GEOFlow',
+        ]);
+        $article = Article::query()->create([
+            'title' => 'AI CRM 到底是什么？',
+            'slug' => 'ai-crm-smart-excerpt',
+            'excerpt' => 'AI CRM 到底是什么？',
+            'content' => <<<'MD'
+# AI CRM 到底是什么？
+
+## 核心摘要
+- AI CRM 可以帮助销售团队更快完成线索分层和跟进优先级判断。
+- 更适合已有客户数据沉淀、但销售动作还依赖人工经验的团队。
+MD,
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'is_ai_generated' => 1,
+            'published_at' => Carbon::parse('2026-05-26 09:15:00'),
+        ]);
+
+        $this->get(route('site.article', $article->slug))
+            ->assertOk()
+            ->assertSee('2026-05-26 09:15')
+            ->assertSee('AI CRM 可以帮助销售团队更快完成线索分层和跟进优先级判断。')
+            ->assertDontSee('<p class="article-kicker m-0 text-gray-700">AI CRM 到底是什么？</p>', false);
     }
 
     public function test_homepage_uses_explicit_hot_and_featured_articles(): void

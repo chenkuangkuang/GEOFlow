@@ -6,6 +6,39 @@
     $hasCategories = (bool) ($hasCategories ?? true);
     $categoryCreateUrl = (string) ($categoryCreateUrl ?? route('admin.categories.create'));
     $t = static fn (string $key, array $replace = []): string => __("admin.$key", $replace);
+    $taskUiText = [
+        'article_type_mode' => '文章类型模式',
+        'article_type_options' => '允许的文章类型',
+        'writing_style_mode' => '语言风格模式',
+        'writing_style_options' => '允许的语言风格',
+        'length_mode' => '篇幅控制',
+        'length_min' => '最小字数',
+        'length_max' => '最大字数',
+        'article_type_fixed' => '固定类型',
+        'article_type_random' => '随机类型',
+        'article_type_smart_random' => '智能随机类型',
+        'article_type_explainer' => '解释型',
+        'article_type_comparison' => '比较型',
+        'article_type_decision' => '决策型',
+        'article_type_tutorial' => '教程型',
+        'writing_style_fixed' => '固定风格',
+        'writing_style_random' => '随机风格',
+        'writing_style_professional' => '专业可信型',
+        'writing_style_consultant' => '咨询顾问型',
+        'writing_style_editorial' => '媒体解读型',
+        'writing_style_educational' => '教学拆解型',
+        'writing_style_friendly' => '口语亲和型',
+        'length_short' => '精简（默认短文）',
+        'length_medium' => '标准',
+        'length_long' => '深入',
+        'length_custom' => '自定义',
+        'help_article_type_mode' => '固定类型会始终生成同一种文章结构；随机类型会在勾选类型中随机抽取；智能随机会先根据标题/关键词判断更适合的类型，再在匹配类型中随机选择。',
+        'help_article_type_options' => '勾选当前任务允许使用的文章类型。随机与智能随机只会在这里勾选的范围内选择。',
+        'help_writing_style_mode' => '固定风格会始终保持一种语言气质；随机风格会在勾选风格池中随机抽取一种表达方式。',
+        'help_writing_style_options' => '勾选当前任务允许使用的语言风格。随机风格只会在已勾选范围内切换。',
+        'help_length_mode' => '默认推荐短文高信息密度输出。精简更适合短、密、快读；标准适合常规解释；深入只适合确实需要展开的主题。',
+        'help_length_custom' => '仅在选择“自定义”时填写。用于限制文章大概字数范围，例如 400-700。',
+    ];
 @endphp
 
 @section('content')
@@ -117,6 +150,7 @@
                                         <option value="{{ $kb['id'] }}" @selected((string) old('knowledge_base_id', (string) ($taskForm['knowledge_base_id'] ?? '')) === (string) $kb['id'])>{{ $kb['name'] }}</option>
                                     @endforeach
                                 </select>
+                                <p class="mt-1 text-sm text-gray-500">{!! $t('task_create.help.knowledge_base') !!}</p>
                             </div>
                             <div>
                                 <label for="author_id" class="block text-sm font-medium text-gray-700">{{ $t('task_create.field.author') }}</label>
@@ -126,6 +160,83 @@
                                         <option value="{{ $author['id'] }}" @selected((string) old('author_id', (string) ($taskForm['author_id'] ?? '0')) === (string) $author['id'])>{{ $author['name'] }}</option>
                                     @endforeach
                                 </select>
+                            </div>
+                            @php
+                                $articleTypeMode = (string) old('article_type_mode', (string) ($taskForm['article_type_mode'] ?? 'smart_random'));
+                                $articleTypeOptions = old('article_type_options', $taskForm['article_type_options'] ?? ['explainer', 'comparison', 'decision', 'tutorial']);
+                                $writingStyleMode = (string) old('writing_style_mode', (string) ($taskForm['writing_style_mode'] ?? 'random'));
+                                $writingStyleOptions = old('writing_style_options', $taskForm['writing_style_options'] ?? ['professional', 'consultant', 'editorial', 'educational', 'friendly']);
+                            @endphp
+                            <div>
+                                <label for="article_type_mode" class="block text-sm font-medium text-gray-700">{{ $taskUiText['article_type_mode'] }}</label>
+                                <select name="article_type_mode" id="article_type_mode" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                                    <option value="fixed" @selected($articleTypeMode === 'fixed')>{{ $taskUiText['article_type_fixed'] }}</option>
+                                    <option value="random" @selected($articleTypeMode === 'random')>{{ $taskUiText['article_type_random'] }}</option>
+                                    <option value="smart_random" @selected($articleTypeMode === 'smart_random')>{{ $taskUiText['article_type_smart_random'] }}</option>
+                                </select>
+                                <p class="mt-1 text-sm text-gray-500">{{ $taskUiText['help_article_type_mode'] }}</p>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">{{ $taskUiText['article_type_options'] }}</label>
+                                <div class="mt-2 grid grid-cols-2 gap-3">
+                                    @foreach (['explainer', 'comparison', 'decision', 'tutorial'] as $type)
+                                        <label class="flex items-center rounded-md border border-gray-200 px-3 py-2 text-sm text-gray-700">
+                                            <input type="checkbox" name="article_type_options[]" value="{{ $type }}" @checked(in_array($type, (array) $articleTypeOptions, true))
+                                                   class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                                            <span class="ml-2">{{ $taskUiText['article_type_'.$type] }}</span>
+                                        </label>
+                                    @endforeach
+                                </div>
+                                <p class="mt-1 text-sm text-gray-500">{{ $taskUiText['help_article_type_options'] }}</p>
+                            </div>
+                            <div>
+                                <label for="writing_style_mode" class="block text-sm font-medium text-gray-700">{{ $taskUiText['writing_style_mode'] }}</label>
+                                <select name="writing_style_mode" id="writing_style_mode" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                                    <option value="fixed" @selected($writingStyleMode === 'fixed')>{{ $taskUiText['writing_style_fixed'] }}</option>
+                                    <option value="random" @selected($writingStyleMode === 'random')>{{ $taskUiText['writing_style_random'] }}</option>
+                                </select>
+                                <p class="mt-1 text-sm text-gray-500">{{ $taskUiText['help_writing_style_mode'] }}</p>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700">{{ $taskUiText['writing_style_options'] }}</label>
+                                <div class="mt-2 grid grid-cols-2 gap-3">
+                                    @foreach (['professional', 'consultant', 'editorial', 'educational', 'friendly'] as $style)
+                                        <label class="flex items-center rounded-md border border-gray-200 px-3 py-2 text-sm text-gray-700">
+                                            <input type="checkbox" name="writing_style_options[]" value="{{ $style }}" @checked(in_array($style, (array) $writingStyleOptions, true))
+                                                   class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                                            <span class="ml-2">{{ $taskUiText['writing_style_'.$style] }}</span>
+                                        </label>
+                                    @endforeach
+                                </div>
+                                <p class="mt-1 text-sm text-gray-500">{{ $taskUiText['help_writing_style_options'] }}</p>
+                            </div>
+                            @php
+                                $lengthMode = (string) old('length_mode', (string) ($taskForm['length_mode'] ?? 'short'));
+                            @endphp
+                            <div>
+                                <label for="length_mode" class="block text-sm font-medium text-gray-700">{{ $taskUiText['length_mode'] }}</label>
+                                <select name="length_mode" id="length_mode" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                                    <option value="short" @selected($lengthMode === 'short')>{{ $taskUiText['length_short'] }}</option>
+                                    <option value="medium" @selected($lengthMode === 'medium')>{{ $taskUiText['length_medium'] }}</option>
+                                    <option value="long" @selected($lengthMode === 'long')>{{ $taskUiText['length_long'] }}</option>
+                                    <option value="custom" @selected($lengthMode === 'custom')>{{ $taskUiText['length_custom'] }}</option>
+                                </select>
+                                <p class="mt-1 text-sm text-gray-500">{{ $taskUiText['help_length_mode'] }}</p>
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label for="length_min" class="block text-sm font-medium text-gray-700">{{ $taskUiText['length_min'] }}</label>
+                                    <input type="number" name="length_min" id="length_min" min="120" max="5000" value="{{ old('length_min', (string) ($taskForm['length_min'] ?? '')) }}"
+                                           class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label for="length_max" class="block text-sm font-medium text-gray-700">{{ $taskUiText['length_max'] }}</label>
+                                    <input type="number" name="length_max" id="length_max" min="120" max="5000" value="{{ old('length_max', (string) ($taskForm['length_max'] ?? '')) }}"
+                                           class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div class="col-span-2">
+                                    <p class="mt-1 text-sm text-gray-500">{{ $taskUiText['help_length_custom'] }}</p>
+                                </div>
                             </div>
                         </div>
                     </div>

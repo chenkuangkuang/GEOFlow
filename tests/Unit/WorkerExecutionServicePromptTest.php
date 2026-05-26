@@ -82,6 +82,59 @@ class WorkerExecutionServicePromptTest extends TestCase
         $this->assertStringContainsString('标题：AI CRM 到底是什么？', $prompt);
     }
 
+    public function test_prompt_includes_short_dense_specificity_requirements(): void
+    {
+        $service = app(WorkerExecutionService::class);
+        $method = new ReflectionMethod($service, 'buildContentPrompt');
+        $method->setAccessible(true);
+
+        $prompt = (string) $method->invoke(
+            $service,
+            '什么是 AI CRM？',
+            'AI CRM',
+            '请生成文章。',
+            '',
+            [
+                'article_type' => 'explainer',
+                'writing_style' => 'professional',
+                'length_mode' => 'short',
+                'length_min' => null,
+                'length_max' => null,
+            ]
+        );
+
+        $this->assertStringContainsString('篇幅控制', $prompt);
+        $this->assertStringContainsString('尽量保持短小精悍', $prompt);
+        $this->assertStringContainsString('不要泛泛而谈', $prompt);
+        $this->assertStringContainsString('每一段都提供新的有效信息', $prompt);
+    }
+
+    public function test_prompt_uses_type_driven_structure_instead_of_single_fixed_report_frame(): void
+    {
+        $service = app(WorkerExecutionService::class);
+        $method = new ReflectionMethod($service, 'buildContentPrompt');
+        $method->setAccessible(true);
+
+        $prompt = (string) $method->invoke(
+            $service,
+            '什么是 AI CRM？',
+            'AI CRM',
+            'GEO榜单型正文生成',
+            '',
+            [
+                'article_type' => 'tutorial',
+                'writing_style' => 'educational',
+                'length_mode' => 'short',
+                'length_min' => 400,
+                'length_max' => 800,
+            ]
+        );
+
+        $this->assertStringContainsString('文章类型：教程型', $prompt);
+        $this->assertStringContainsString('正文要围绕步骤、前置条件、关键细节和常见坑点展开', $prompt);
+        $this->assertStringNotContainsString('TOP1', $prompt);
+    }
+
     private function renderContentPrompt(string $title, string $keyword, ?string $promptContent, string $knowledgeContext): string
     {
         $service = app(WorkerExecutionService::class);

@@ -95,6 +95,13 @@ class TaskLifecycleService
                 'model_selection_mode' => $normalized['model_selection_mode'],
                 'status' => $normalized['status'],
                 'knowledge_base_id' => $normalized['knowledge_base_id'],
+                'article_type_mode' => $normalized['article_type_mode'],
+                'article_type_options' => $normalized['article_type_options'],
+                'writing_style_mode' => $normalized['writing_style_mode'],
+                'writing_style_options' => $normalized['writing_style_options'],
+                'length_mode' => $normalized['length_mode'],
+                'length_min' => $normalized['length_min'],
+                'length_max' => $normalized['length_max'],
                 'category_mode' => $normalized['category_mode'],
                 'fixed_category_id' => $normalized['fixed_category_id'],
             ]);
@@ -557,6 +564,82 @@ class TaskLifecycleService
             $output['model_selection_mode'] = 'fixed';
         }
 
+        if (array_key_exists('article_type_mode', $data)) {
+            $articleTypeMode = trim((string) $data['article_type_mode']);
+            if (! in_array($articleTypeMode, ['fixed', 'random', 'smart_random'], true)) {
+                $fieldErrors['article_type_mode'] = '文章类型模式无效';
+            } else {
+                $output['article_type_mode'] = $articleTypeMode;
+            }
+        } elseif (! $isUpdate) {
+            $output['article_type_mode'] = 'smart_random';
+        }
+
+        if (array_key_exists('article_type_options', $data)) {
+            $output['article_type_options'] = $this->normalizeEnumList($data['article_type_options'], ['explainer', 'comparison', 'decision', 'tutorial']);
+            if ($output['article_type_options'] === []) {
+                $fieldErrors['article_type_options'] = '请至少选择一种文章类型';
+            }
+        } elseif (! $isUpdate) {
+            $output['article_type_options'] = ['explainer', 'comparison', 'decision', 'tutorial'];
+        }
+
+        if (array_key_exists('writing_style_mode', $data)) {
+            $writingStyleMode = trim((string) $data['writing_style_mode']);
+            if (! in_array($writingStyleMode, ['fixed', 'random'], true)) {
+                $fieldErrors['writing_style_mode'] = '语言风格模式无效';
+            } else {
+                $output['writing_style_mode'] = $writingStyleMode;
+            }
+        } elseif (! $isUpdate) {
+            $output['writing_style_mode'] = 'random';
+        }
+
+        if (array_key_exists('writing_style_options', $data)) {
+            $output['writing_style_options'] = $this->normalizeEnumList($data['writing_style_options'], ['professional', 'consultant', 'editorial', 'educational', 'friendly']);
+            if ($output['writing_style_options'] === []) {
+                $fieldErrors['writing_style_options'] = '请至少选择一种语言风格';
+            }
+        } elseif (! $isUpdate) {
+            $output['writing_style_options'] = ['professional', 'consultant', 'editorial', 'educational', 'friendly'];
+        }
+
+        if (array_key_exists('length_mode', $data)) {
+            $lengthMode = trim((string) $data['length_mode']);
+            if (! in_array($lengthMode, ['short', 'medium', 'long', 'custom'], true)) {
+                $fieldErrors['length_mode'] = '篇幅模式无效';
+            } else {
+                $output['length_mode'] = $lengthMode;
+            }
+        } elseif (! $isUpdate) {
+            $output['length_mode'] = 'short';
+        }
+
+        if (array_key_exists('length_min', $data)) {
+            $lengthMin = (int) $data['length_min'];
+            $output['length_min'] = $lengthMin > 0 ? $lengthMin : null;
+        } elseif (! $isUpdate) {
+            $output['length_min'] = null;
+        }
+
+        if (array_key_exists('length_max', $data)) {
+            $lengthMax = (int) $data['length_max'];
+            $output['length_max'] = $lengthMax > 0 ? $lengthMax : null;
+        } elseif (! $isUpdate) {
+            $output['length_max'] = null;
+        }
+
+        $effectiveLengthMode = (string) ($output['length_mode'] ?? ($data['length_mode'] ?? 'short'));
+        if ($effectiveLengthMode === 'custom') {
+            $lengthMin = $output['length_min'] ?? null;
+            $lengthMax = $output['length_max'] ?? null;
+            if ($lengthMin === null || $lengthMax === null) {
+                $fieldErrors['length_mode'] = '自定义篇幅必须同时填写最小和最大字数';
+            } elseif ($lengthMin > $lengthMax) {
+                $fieldErrors['length_mode'] = '自定义篇幅的最小字数不能大于最大字数';
+            }
+        }
+
         if (array_key_exists('status', $data)) {
             $status = trim((string) $data['status']);
             if (! in_array($status, ['active', 'paused'], true)) {
@@ -659,5 +742,24 @@ class TaskLifecycleService
         $value = strtolower(trim((string) $value));
 
         return in_array($value, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
+    }
+
+    /**
+     * @param  mixed  $values
+     * @param  list<string>  $allowed
+     * @return list<string>
+     */
+    private function normalizeEnumList(mixed $values, array $allowed): array
+    {
+        $items = is_array($values) ? $values : [];
+        $normalized = [];
+        foreach ($items as $value) {
+            $item = trim((string) $value);
+            if ($item !== '' && in_array($item, $allowed, true) && ! in_array($item, $normalized, true)) {
+                $normalized[] = $item;
+            }
+        }
+
+        return $normalized;
     }
 }

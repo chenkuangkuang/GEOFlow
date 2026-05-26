@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Admin;
+use App\Models\Category;
 use App\Models\Task;
 use App\Support\AdminWeb;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -51,11 +52,19 @@ class AdminTasksPageTest extends TestCase
             'role' => 'admin',
             'status' => 'active',
         ]);
+        Category::query()->create([
+            'name' => '任务分类',
+            'slug' => 'task-category',
+        ]);
 
         $this->actingAs($admin, 'admin')
             ->get(route('admin.tasks.create'))
             ->assertOk()
-            ->assertSee(__('admin.task_create.page_heading'));
+            ->assertSee(__('admin.task_create.page_heading'))
+            ->assertSee(__('admin.task_create.field.article_type_mode'))
+            ->assertSee(__('admin.task_create.field.writing_style_mode'))
+            ->assertSee(__('admin.task_create.field.length_mode'))
+            ->assertSee('默认推荐短文高信息密度输出。精简更适合短、密、快读；标准适合常规解释；深入只适合确实需要展开的主题。');
     }
 
     public function test_task_article_action_links_to_filtered_article_list(): void

@@ -10,6 +10,7 @@ use App\Models\Author;
 use App\Models\Category;
 use App\Models\Task;
 use App\Support\GeoFlow\ArticleWorkflow;
+use App\Support\GeoFlow\ArticleSummaryGenerator;
 use Illuminate\Support\Facades\DB;
 
 class ArticleGeoFlowService
@@ -66,7 +67,7 @@ class ArticleGeoFlowService
             $normalized['review_status']
         );
         $slug = $normalized['slug'] ?: ArticleWorkflow::generateUniqueSlug($normalized['title']);
-        $excerpt = $normalized['excerpt'] !== '' ? $normalized['excerpt'] : mb_substr(strip_tags($normalized['content']), 0, 200);
+        $excerpt = $normalized['excerpt'] !== '' ? $normalized['excerpt'] : ArticleSummaryGenerator::fromMarkdown($normalized['content'], $normalized['title'], 200);
 
         $article = Article::query()->create([
             'title' => $normalized['title'],

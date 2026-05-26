@@ -9,6 +9,7 @@ use App\Models\Category;
 use App\Models\Task;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\ArticleWorkflow;
+use App\Support\GeoFlow\ArticleSummaryGenerator;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -219,7 +220,7 @@ class ArticleController extends Controller
                 'title' => $payload['title'],
                 'slug' => ArticleWorkflow::generateUniqueSlug($payload['title']),
                 'content' => $payload['content'],
-                'excerpt' => $payload['excerpt'] !== '' ? $payload['excerpt'] : mb_substr(strip_tags($payload['content']), 0, 200, 'UTF-8'),
+                'excerpt' => $payload['excerpt'] !== '' ? $payload['excerpt'] : ArticleSummaryGenerator::fromMarkdown($payload['content'], $payload['title'], 200),
                 'keywords' => $payload['keywords'],
                 'meta_description' => $payload['meta_description'],
                 'category_id' => (int) $payload['category_id'],
@@ -297,7 +298,7 @@ class ArticleController extends Controller
                     ? $article->slug
                     : ArticleWorkflow::generateUniqueSlug($payload['title'], (int) $article->id),
                 'content' => $payload['content'],
-                'excerpt' => $payload['excerpt'] !== '' ? $payload['excerpt'] : mb_substr(strip_tags($payload['content']), 0, 200, 'UTF-8'),
+                'excerpt' => $payload['excerpt'] !== '' ? $payload['excerpt'] : ArticleSummaryGenerator::fromMarkdown($payload['content'], $payload['title'], 200),
                 'keywords' => $payload['keywords'],
                 'meta_description' => $payload['meta_description'],
                 'category_id' => (int) $payload['category_id'],
