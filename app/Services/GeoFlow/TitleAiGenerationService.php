@@ -91,22 +91,7 @@ class TitleAiGenerationService
         $driver = OpenAiRuntimeProvider::resolveChatDriver($providerUrl, (string) ($aiModel->model_id ?? ''));
         $providerName = OpenAiRuntimeProvider::registerProvider('title_ai', $driver, $providerUrl, $apiKey);
 
-        $styleMap = [
-            'professional' => '专业严谨的',
-            'attractive' => '吸引眼球的',
-            'seo' => 'SEO优化的',
-            'creative' => '创意新颖的',
-            'question' => '疑问式的',
-        ];
-        $styleDescription = $styleMap[$style] ?? '专业严谨的';
-        $keywordsText = implode('、', $keywords);
-
-        $systemPrompt = "你是一个专业的内容标题生成专家。请根据提供的关键词生成{$styleDescription}文章标题。";
-        $userPrompt = "请基于以下关键词生成 {$count} 个{$styleDescription}文章标题：\n\n关键词：{$keywordsText}\n\n";
-        if ($customPrompt !== '') {
-            $userPrompt .= "额外要求：{$customPrompt}\n\n";
-        }
-        $userPrompt .= "要求：\n1. 每个标题独占一行\n2. 标题要有吸引力和可读性\n3. 适合搜索引擎优化\n4. 不要添加序号或其他标记\n5. 直接输出标题内容";
+        [$systemPrompt, $userPrompt] = $this->buildTitleGenerationPrompts($keywords, $count, $style, $customPrompt);
 
         try {
             $response = agent($systemPrompt)->prompt(
@@ -131,6 +116,32 @@ class TitleAiGenerationService
         }
 
         return $content;
+    }
+
+    /**
+     * @param  list<string>  $keywords
+     * @return array{0:string,1:string}
+     */
+    private function buildTitleGenerationPrompts(array $keywords, int $count, string $style, string $customPrompt): array
+    {
+        $styleMap = [
+            'professional' => '专业严谨但不单一的',
+            'attractive' => '吸引眼球但有结构变化的',
+            'seo' => 'SEO优化且多结构的',
+            'creative' => '创意新颖且多结构的',
+            'question' => '疑问式为主但混合多种结构的',
+        ];
+        $styleDescription = $styleMap[$style] ?? '专业严谨但不单一的';
+        $keywordsText = implode('、', $keywords);
+
+        $systemPrompt = "你是一个专业的内容标题生成专家。请根据提供的关键词生成{$styleDescription}文章标题，确保标题家族多样化，不要把所有结果写成同一种问句结构。";
+        $userPrompt = "请基于以下关键词生成 {$count} 个{$styleDescription}文章标题：\n\n关键词：{$keywordsText}\n\n";
+        if ($customPrompt !== '') {
+            $userPrompt .= "额外要求：{$customPrompt}\n\n";
+        }
+        $userPrompt .= "要求：\n1. 每个标题独占一行\n2. 标题要混合问句、指南、解析、对比、决策等不同结构\n3. 同一种标题结构不要连续重复\n4. 标题要有吸引力和可读性\n5. 适合搜索引擎优化\n6. 不要添加序号或其他标记\n7. 直接输出标题内容";
+
+        return [$systemPrompt, $userPrompt];
     }
 
     /**
@@ -168,37 +179,52 @@ class TitleAiGenerationService
     {
         $styleTemplates = [
             'professional' => [
-                '{keyword}的深度分析与研究',
+                '{keyword}的深度分析',
                 '关于{keyword}的专业见解',
-                '{keyword}行业发展趋势报告',
+                '{keyword}入门指南',
+                '{keyword}到底是什么？',
+                '{keyword}为什么重要？',
+                '{keyword}的核心要点',
             ],
             'attractive' => [
                 '你绝对不知道的{keyword}秘密',
                 '揭秘{keyword}背后的故事',
                 '{keyword}让人意想不到的用途',
+                '{keyword}怎么选？',
+                '{keyword}完整指南',
+                '{keyword}对比分析',
             ],
             'seo' => [
                 '{keyword}完整指南：从入门到精通',
                 '{keyword}常见问题解答大全',
                 '如何选择最适合的{keyword}方案',
+                '{keyword}怎么做？',
+                '{keyword}选型指南',
+                '{keyword}适合谁？',
             ],
             'creative' => [
                 '重新定义{keyword}的可能性',
                 '如果{keyword}会说话，它会告诉你什么？',
                 '当{keyword}遇上创新思维',
+                '{keyword}的未来在哪里？',
+                '{keyword}的关键差异',
+                '{keyword}上手指南',
             ],
             'question' => [
                 '{keyword}真的有用吗？',
                 '为什么{keyword}如此重要？',
                 '{keyword}的未来在哪里？',
+                '{keyword}到底是什么？',
+                '{keyword}怎么选？',
+                '{keyword}入门指南',
             ],
         ];
 
         $templates = $styleTemplates[$style] ?? $styleTemplates['professional'];
         $titles = [];
         for ($index = 0; $index < $count; $index++) {
-            $keyword = $keywords[array_rand($keywords)];
-            $template = $templates[array_rand($templates)];
+            $keyword = $keywords[$index % max(1, count($keywords))];
+            $template = $templates[$index % count($templates)];
             $titles[] = str_replace('{keyword}', $keyword, $template);
         }
 

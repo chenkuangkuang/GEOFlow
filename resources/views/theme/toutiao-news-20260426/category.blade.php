@@ -41,6 +41,7 @@
                 @else
                     <p class="tt-page-desc">{{ $pageDescription }}</p>
                 @endif
+                <div class="tt-page-kicker">{{ (int) ($articleCount ?? 0) }} posts</div>
             </div>
 
             <section class="tt-feed-card">

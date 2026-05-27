@@ -39,6 +39,11 @@ class CategoryController extends Controller
             ->paginate($perPage)
             ->withQueryString();
 
+        $articleCount = Article::query()
+            ->published()
+            ->where('category_id', $category->id)
+            ->count();
+
         $summaries = [];
         foreach ($articles as $row) {
             if ($row instanceof Article) {
@@ -70,6 +75,7 @@ class CategoryController extends Controller
             'articles' => $articles,
             'hotArticles' => $hotArticles,
             'cardSummaries' => $summaries,
+            'articleCount' => $articleCount,
             'siteTitle' => $siteTitle,
             'siteDescription' => $siteDescription,
             'siteKeywords' => $siteKeywords,

@@ -14,6 +14,7 @@ use App\Models\KnowledgeChunk;
 use App\Models\Prompt;
 use App\Models\Task;
 use App\Models\Title;
+use App\Models\TitleLibrary;
 use App\Support\GeoFlow\ApiKeyCrypto;
 use App\Support\GeoFlow\ArticleSummaryGenerator;
 use App\Support\GeoFlow\ArticleWorkflow;
@@ -33,7 +34,8 @@ class WorkerExecutionService
      */
     public function __construct(
         private readonly ApiKeyCrypto $apiKeyCrypto,
-        private readonly KnowledgeChunkSyncService $knowledgeChunkSyncService
+        private readonly KnowledgeChunkSyncService $knowledgeChunkSyncService,
+        private readonly TitleDiversityService $titleDiversityService
     ) {}
 
     /**
@@ -77,10 +79,11 @@ class WorkerExecutionService
 
         $keyword = (string) ($titleRow->keyword ?? '');
         $generationProfile = $this->resolveGenerationProfile($task, (string) $titleRow->title, $keyword);
-        $effectiveTitle = $this->rewriteGeneratedTitle((string) $titleRow->title, $keyword, $generationProfile);
+        $recentTitles = $this->loadRecentTitleHistory((int) $task->id);
+        $effectiveTitle = $this->rewriteGeneratedTitle((string) $titleRow->title, $keyword, $generationProfile, $recentTitles);
         $knowledgeContext = $this->resolveKnowledgeContext($task, $effectiveTitle, $keyword);
-        $contentPrompt = $this->buildContentPrompt($effectiveTitle, $keyword, $prompt?->content, $knowledgeContext, $generationProfile);
-        $generation = $this->generateContentWithModelSelection($task, $contentPrompt);
+        $contentPrompt = $this->buildContentPrompt($effectiveTitle, $keyword, $prompt?->content, $knowledgeContext, $generationProfile, (string) $task->name, $recentTitles);
+        $generation = $this->generateContentWithModelSelection($task, $contentPrompt, $generationProfile);
         $aiModel = $generation['model'];
         $generatedContent = $generation['content'];
         $imageResult = $this->insertTaskImagesIntoContent($task, $generatedContent);
@@ -306,7 +309,7 @@ class WorkerExecutionService
      *
      * @return array{content:string,model:AiModel,attempts:list<array{model_id:int,model_name:string,status:string,reason:?string}>}
      */
-    private function generateContentWithModelSelection(Task $task, string $contentPrompt): array
+    private function generateContentWithModelSelection(Task $task, string $contentPrompt, array $generationProfile = []): array
     {
         $mode = (string) ($task->model_selection_mode ?? 'fixed');
         $attempts = [];
@@ -325,7 +328,7 @@ class WorkerExecutionService
             }
 
             try {
-                $content = $this->generateContent($candidate, $contentPrompt);
+                $content = $this->generateContent($candidate, $contentPrompt, $generationProfile);
                 $attempts[] = $this->buildModelAttempt($candidate, 'success', null);
 
                 return [
@@ -425,6 +428,19 @@ class WorkerExecutionService
         }
 
         $query = Title::query()->where('library_id', $libraryId);
+        $titleLibrary = TitleLibrary::query()->find($libraryId);
+        if ($this->isTraderAiBrandContext((string) ($task->name ?? ''), (string) ($titleLibrary?->name ?? ''))) {
+            $query->where(function ($builder): void {
+                foreach ($this->traderAiOffTopicTerms() as $term) {
+                    $like = '%'.mb_strtolower($term, 'UTF-8').'%';
+                    $builder->where(function ($termQuery) use ($like): void {
+                        $termQuery->whereRaw('LOWER(COALESCE(title, \'\')) NOT LIKE ?', [$like])
+                            ->whereRaw('LOWER(COALESCE(keyword, \'\')) NOT LIKE ?', [$like]);
+                    });
+                }
+            });
+        }
+
         if ((int) ($task->is_loop ?? 0) !== 1) {
             $query->where(function ($builder): void {
                 $builder->whereNull('used_count')->orWhere('used_count', '<=', 0);
@@ -477,7 +493,7 @@ class WorkerExecutionService
     /**
      * 构造正文提示词：优先精确替换变量；无变量的自定义提示词自动补齐任务上下文。
      */
-    private function buildContentPrompt(string $title, string $keyword, ?string $promptContent, string $knowledgeContext, array $generationProfile = []): string
+    private function buildContentPrompt(string $title, string $keyword, ?string $promptContent, string $knowledgeContext, array $generationProfile = [], ?string $taskName = null, array $recentTitles = []): string
     {
         $customPrompt = trim((string) $promptContent);
         $hasExplicitContextVariables = $customPrompt !== '' && $this->promptHasKnownContextVariables($customPrompt);
@@ -487,13 +503,14 @@ class WorkerExecutionService
             'knowledge' => $knowledgeContext,
         ]) : '';
 
-        $renderedPrompt = $this->composeAdaptiveBasePrompt($title, $keyword, $knowledgeContext, $generationProfile, ! $hasExplicitContextVariables);
+        $renderedPrompt = $this->composeAdaptiveBasePrompt($title, $keyword, $knowledgeContext, $generationProfile, ! $hasExplicitContextVariables, $recentTitles);
         if ($renderedCustomPrompt !== '') {
             $renderedPrompt .= "\n\n".$this->appendCustomPromptReference($renderedCustomPrompt, $generationProfile);
         }
 
         $renderedPrompt = $this->appendWritingProfileGuidance($renderedPrompt, $generationProfile);
         $renderedPrompt = $this->appendLengthGuidance($renderedPrompt, $generationProfile);
+        $renderedPrompt = $this->appendBrandGuard($renderedPrompt, $taskName, $title, $keyword, $knowledgeContext);
 
         return trim($renderedPrompt)."\n\n".$this->finalPromptInstruction($renderedPrompt);
     }
@@ -501,7 +518,7 @@ class WorkerExecutionService
     /**
      * @param  array{article_type?:string,writing_style?:string,length_mode?:string,length_min?:int|null,length_max?:int|null}  $generationProfile
      */
-    private function composeAdaptiveBasePrompt(string $title, string $keyword, string $knowledgeContext, array $generationProfile, bool $includeTaskContext = true): string
+    private function composeAdaptiveBasePrompt(string $title, string $keyword, string $knowledgeContext, array $generationProfile, bool $includeTaskContext = true, array $recentTitles = []): string
     {
         $articleType = (string) ($generationProfile['article_type'] ?? 'explainer');
 
@@ -531,7 +548,7 @@ class WorkerExecutionService
             $lines[] = '- Do not write like a formal report unless the topic truly requires it.';
             $lines[] = '';
             $lines[] = '[Structure requirements]';
-            foreach ($this->englishAdaptiveStructure($articleType, $title) as $line) {
+            foreach ($this->englishAdaptiveStructure($articleType, $title, $recentTitles) as $line) {
                 $lines[] = $line;
             }
 
@@ -563,7 +580,7 @@ class WorkerExecutionService
         $lines[] = '- 除非主题真的需要，不要写成“行业发展趋势报告”“分析与研究”那种正式报告体。';
         $lines[] = '';
         $lines[] = '【结构要求】';
-        foreach ($this->chineseAdaptiveStructure($articleType, $title) as $line) {
+        foreach ($this->chineseAdaptiveStructure($articleType, $title, $recentTitles) as $line) {
             $lines[] = $line;
         }
 
@@ -783,6 +800,33 @@ class WorkerExecutionService
         return trim($prompt)."\n\n".implode("\n", $lines);
     }
 
+    private function appendBrandGuard(string $prompt, ?string $taskName, string $title, string $keyword, string $knowledgeContext): string
+    {
+        if (! $this->isTraderAiBrandContext((string) $taskName, $title, $keyword, $knowledgeContext)) {
+            return $prompt;
+        }
+
+        if ($this->isLikelyEnglishPrompt($prompt.' '.$title.' '.$keyword.' '.$knowledgeContext)) {
+            $lines = [
+                '[Brand guard]',
+                '- This task must stay focused on trader.ai product marketing, use cases, and conversion intent.',
+                '- Do not use GPT-5.2, MiniMax, or other generic model names as the main topic unless the article is explicitly a trader.ai comparison.',
+                '- Prefer trader.ai, AI trading platform, AI trading bot, trading agent, live trading, signal subscription, and related product vocabulary.',
+            ];
+
+            return trim($prompt)."\n\n".implode("\n", $lines);
+        }
+
+        $lines = [
+            '【品牌约束】',
+            '- 本任务必须围绕 trader.ai 的产品、功能、使用场景和转化诉求写作。',
+            '- 不要把 GPT-5.2、MiniMax 这类泛模型名当作主标题，除非正文明确是在对比 trader.ai 相关能力。',
+            '- 优先使用 trader.ai、AI交易平台、AI交易机器人、交易代理、实盘AI交易、信号订阅网络等语义。',
+        ];
+
+        return trim($prompt)."\n\n".implode("\n", $lines);
+    }
+
     private function finalPromptInstruction(string $prompt): string
     {
         if ($this->isLikelyEnglishPrompt($prompt)) {
@@ -790,6 +834,29 @@ class WorkerExecutionService
         }
 
         return '请直接输出最终文章正文（Markdown），不要输出思考过程，不要解释你将如何写作，不要重复提示词、不要输出占位符。';
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function traderAiOffTopicTerms(): array
+    {
+        return [
+            'GPT-5.2',
+            'MiniMax-M2.1',
+            'OpenClaw',
+        ];
+    }
+
+    private function isTraderAiBrandContext(string ...$parts): bool
+    {
+        $haystack = mb_strtolower(trim(implode(' ', $parts)), 'UTF-8');
+        if ($haystack === '') {
+            return false;
+        }
+
+        return preg_match('/trader\s*\.?\s*ai/iu', $haystack) === 1
+            || str_contains($haystack, 'traderai');
     }
 
     private function isLikelyEnglishPrompt(string $prompt): bool
@@ -1002,7 +1069,7 @@ class WorkerExecutionService
     /**
      * 调用任务配置模型生成正文。
      */
-    private function generateContent(AiModel $aiModel, string $contentPrompt): string
+    private function generateContent(AiModel $aiModel, string $contentPrompt, array $generationProfile = []): string
     {
         $providerUrl = OpenAiRuntimeProvider::resolveChatBaseUrl((string) ($aiModel->api_url ?? ''));
         if ($providerUrl === '') {
@@ -1039,6 +1106,7 @@ class WorkerExecutionService
         }
 
         $content = $this->sanitizeGeneratedContent($content);
+        $content = $this->applyGeneratedContentLengthPolicy($content, $generationProfile);
 
         AiModel::query()->whereKey((int) $aiModel->id)->update([
             'used_today' => DB::raw('COALESCE(used_today,0)+1'),
@@ -1136,128 +1204,312 @@ class WorkerExecutionService
     /**
      * @return list<string>
      */
-    private function chineseAdaptiveStructure(string $articleType, string $title): array
+    private function chineseAdaptiveStructure(string $articleType, string $title, array $recentTitles = []): array
     {
-        return match ($articleType) {
+        $variants = match ($articleType) {
             'comparison' => [
-                '# '.$title,
-                '## 先看结论',
-                '- 用 3-5 条要点直接说明差异、取舍和推荐判断。',
-                '## 关键差异',
-                '## 适合谁 / 不适合谁',
-                '## 快速对比表',
-                '## 最终建议',
+                [
+                    '# '.$title,
+                    '## 先看结论',
+                    '- 用 3-5 条要点直接说明差异、取舍和推荐判断。',
+                    '## 关键差异',
+                    '## 适合谁 / 不适合谁',
+                    '## 快速对比表',
+                    '## 最终建议',
+                ],
+                [
+                    '# '.$title,
+                    '## 一句话判断',
+                    '- 先把结论说清，再展开比较依据。',
+                    '## 场景差异',
+                    '## 选择建议',
+                    '## 对比表',
+                    '## 结尾建议',
+                ],
+                [
+                    '# '.$title,
+                    '## 先做选择',
+                    '- 先讲适用场景，再讲差异与取舍。',
+                    '## 核心区别',
+                    '## 各自适合谁',
+                    '## 选型清单',
+                    '## 最后建议',
+                ],
             ],
             'decision' => [
-                '# '.$title,
-                '## 先说结论',
-                '- 直接告诉读者什么人适合、什么人不适合、优先怎么选。',
-                '## 决策标准',
-                '## 不同场景怎么选',
-                '## 容易踩坑的点',
-                '## 最终建议',
+                [
+                    '# '.$title,
+                    '## 先说结论',
+                    '- 直接告诉读者什么人适合、什么人不适合、优先怎么选。',
+                    '## 决策标准',
+                    '## 不同场景怎么选',
+                    '## 容易踩坑的点',
+                    '## 最终建议',
+                ],
+                [
+                    '# '.$title,
+                    '## 直接结论',
+                    '- 用最短路径说明推荐方向。',
+                    '## 判断依据',
+                    '## 场景分流',
+                    '## 常见误区',
+                    '## 选购建议',
+                ],
+                [
+                    '# '.$title,
+                    '## 一眼判断',
+                    '- 先明确适合谁，再解释为什么。',
+                    '## 取舍维度',
+                    '## 适用场景',
+                    '## 不适合谁',
+                    '## 最后建议',
+                ],
             ],
             'tutorial' => [
-                '# '.$title,
-                '## 先看结果',
-                '- 先告诉读者做完能得到什么，以及适合谁照着做。',
-                '## 开始前要准备什么',
-                '## 具体步骤',
-                '## 常见错误与避坑',
-                '## 最后总结',
+                [
+                    '# '.$title,
+                    '## 先看结果',
+                    '- 先告诉读者做完能得到什么，以及适合谁照着做。',
+                    '## 开始前要准备什么',
+                    '## 具体步骤',
+                    '## 常见错误与避坑',
+                    '## 最后总结',
+                ],
+                [
+                    '# '.$title,
+                    '## 先定目标',
+                    '- 先明确你会完成什么，再进入步骤。',
+                    '## 准备清单',
+                    '## 操作步骤',
+                    '## 验证方法',
+                    '## 收尾建议',
+                ],
+                [
+                    '# '.$title,
+                    '## 先上手',
+                    '- 先给最小可行路径，再展开细节。',
+                    '## 前置条件',
+                    '## 步骤拆解',
+                    '## 容易出错的地方',
+                    '## 复盘建议',
+                ],
             ],
             default => [
-                '# '.$title,
-                '## 核心结论',
-                '- 用 3-5 条短要点先讲明白这个主题最重要的判断。',
-                '## 它到底是什么',
-                '## 为什么这件事重要',
-                '## 常见误区 / 关键边界',
-                '## 最后总结',
+                [
+                    '# '.$title,
+                    '## 核心结论',
+                    '- 用 3-5 条短要点先讲明白这个主题最重要的判断。',
+                    '## 它到底是什么',
+                    '## 为什么这件事重要',
+                    '## 常见误区 / 关键边界',
+                    '## 最后总结',
+                ],
+                [
+                    '# '.$title,
+                    '## 一句话先说清',
+                    '- 用简短判断开场，再慢慢展开。',
+                    '## 基本定义',
+                    '## 实际场景',
+                    '## 常见误解',
+                    '## 结语',
+                ],
+                [
+                    '# '.$title,
+                    '## 先给答案',
+                    '- 先讲这个东西最关键的作用，再解释边界。',
+                    '## 怎么理解它',
+                    '## 什么时候有用',
+                    '## 什么时候要谨慎',
+                    '## 总结',
+                ],
             ],
         };
+
+        return $this->selectStructureVariant($variants, $articleType, $title, $recentTitles);
     }
 
     /**
      * @return list<string>
      */
-    private function englishAdaptiveStructure(string $articleType, string $title): array
+    private function englishAdaptiveStructure(string $articleType, string $title, array $recentTitles = []): array
     {
-        return match ($articleType) {
+        $variants = match ($articleType) {
             'comparison' => [
-                '# '.$title,
-                '## Quick Answer',
-                '- Use 3-5 bullets to summarize the key differences, trade-offs, and recommendation.',
-                '## Key Differences',
-                '## Who Each Option Fits',
-                '## Comparison Table',
-                '## Final Recommendation',
+                [
+                    '# '.$title,
+                    '## Quick Answer',
+                    '- Use 3-5 bullets to summarize the key differences, trade-offs, and recommendation.',
+                    '## Key Differences',
+                    '## Who Each Option Fits',
+                    '## Comparison Table',
+                    '## Final Recommendation',
+                ],
+                [
+                    '# '.$title,
+                    '## Bottom Line',
+                    '- Start with the recommendation, then explain the trade-off.',
+                    '## Scenario Differences',
+                    '## Best Fit by Use Case',
+                    '## Comparison Matrix',
+                    '## Closing Advice',
+                ],
+                [
+                    '# '.$title,
+                    '## Short Answer',
+                    '- State the decision path first.',
+                    '## Where They Differ',
+                    '## Who Should Choose What',
+                    '## Decision Table',
+                    '## Final Pick',
+                ],
             ],
             'decision' => [
-                '# '.$title,
-                '## Quick Answer',
-                '- Tell the reader who should choose what, and why.',
-                '## Decision Criteria',
-                '## Which Option Fits Which Scenario',
-                '## Common Mistakes',
-                '## Final Recommendation',
+                [
+                    '# '.$title,
+                    '## Quick Answer',
+                    '- Tell the reader who should choose what, and why.',
+                    '## Decision Criteria',
+                    '## Which Option Fits Which Scenario',
+                    '## Common Mistakes',
+                    '## Final Recommendation',
+                ],
+                [
+                    '# '.$title,
+                    '## Bottom Line',
+                    '- Give the recommendation first.',
+                    '## Evaluation Criteria',
+                    '## Best Fit Scenarios',
+                    '## Pitfalls to Avoid',
+                    '## Final Advice',
+                ],
+                [
+                    '# '.$title,
+                    '## Direct Answer',
+                    '- Explain the selection rule in one paragraph.',
+                    '## What Matters Most',
+                    '## Fit by Scenario',
+                    '## Common Traps',
+                    '## Takeaway',
+                ],
             ],
             'tutorial' => [
-                '# '.$title,
-                '## What You Will Achieve',
-                '- Clarify the outcome and who this guide is for.',
-                '## What To Prepare First',
-                '## Step-by-Step Guide',
-                '## Common Mistakes and Fixes',
-                '## Final Notes',
+                [
+                    '# '.$title,
+                    '## What You Will Achieve',
+                    '- Clarify the outcome and who this guide is for.',
+                    '## What To Prepare First',
+                    '## Step-by-Step Guide',
+                    '## Common Mistakes and Fixes',
+                    '## Final Notes',
+                ],
+                [
+                    '# '.$title,
+                    '## What You Need',
+                    '- Start with prerequisites and expected results.',
+                    '## Setup',
+                    '## Step-by-Step Walkthrough',
+                    '## Troubleshooting',
+                    '## Wrap-Up',
+                ],
+                [
+                    '# '.$title,
+                    '## Start Here',
+                    '- Show the quickest path to success.',
+                    '## Preparation Checklist',
+                    '## Execution Steps',
+                    '## Common Errors',
+                    '## Summary',
+                ],
             ],
             default => [
-                '# '.$title,
-                '## Key Takeaways',
-                '- Summarize the most important judgments in 3-5 bullets.',
-                '## What It Actually Is',
-                '## Why It Matters',
-                '## Misconceptions and Boundaries',
-                '## Final Notes',
+                [
+                    '# '.$title,
+                    '## Key Takeaways',
+                    '- Summarize the most important judgments in 3-5 bullets.',
+                    '## What It Actually Is',
+                    '## Why It Matters',
+                    '## Misconceptions and Boundaries',
+                    '## Final Notes',
+                ],
+                [
+                    '# '.$title,
+                    '## The Short Version',
+                    '- Start with the answer, then expand.',
+                    '## Core Definition',
+                    '## Real-World Use',
+                    '## Common Misunderstandings',
+                    '## Closing Thoughts',
+                ],
+                [
+                    '# '.$title,
+                    '## Quick Summary',
+                    '- Explain the key point up front.',
+                    '## What It Means',
+                    '## When It Helps',
+                    '## When To Be Careful',
+                    '## Bottom Line',
+                ],
             ],
         };
+
+        return $this->selectStructureVariant($variants, $articleType, $title, $recentTitles);
+    }
+
+    /**
+     * @param  list<array{0:string,1:string,2?:string,3?:string,4?:string,5?:string,6?:string}>  $variants
+     * @return list<string>
+     */
+    private function selectStructureVariant(array $variants, string $articleType, string $title, array $recentTitles = []): array
+    {
+        if ($variants === []) {
+            return [];
+        }
+
+        $recentSignature = json_encode($this->titleDiversityService->countRecentTitleFamilies($recentTitles), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
+        $seed = crc32($articleType.'|'.$title.'|'.$recentSignature);
+        $index = (int) ($seed % count($variants));
+
+        return $variants[$index];
     }
 
     /**
      * @param  array{article_type?:string,writing_style?:string}  $generationProfile
      */
-    private function rewriteGeneratedTitle(string $title, string $keyword, array $generationProfile): string
+    private function rewriteGeneratedTitle(string $title, string $keyword, array $generationProfile, array $recentTitles = []): string
     {
-        $original = trim($title);
-        if ($original === '') {
-            return trim($keyword) !== '' ? trim($keyword) : '未命名文章';
-        }
-
-        if (! preg_match('/(报告|分析与研究|深度分析|专业见解|行业发展趋势)/u', $original)) {
-            return $original;
-        }
-
-        $subject = trim($keyword) !== '' ? trim($keyword) : $this->extractTitleSubject($original);
-        if ($subject === '') {
-            $subject = $original;
-        }
-
-        return match ((string) ($generationProfile['article_type'] ?? 'explainer')) {
-            'comparison' => preg_match('/\b(vs|VS|versus)\b/u', $original) === 1 || str_contains($original, '对比')
-                ? $original
-                : $subject.'怎么选？',
-            'decision' => $subject.'怎么选？',
-            'tutorial' => $subject.'怎么做？',
-            default => $subject.'到底是什么？',
-        };
+        return $this->titleDiversityService->rewriteTitle(
+            $title,
+            $keyword,
+            (string) ($generationProfile['article_type'] ?? 'explainer'),
+            $recentTitles
+        );
     }
 
-    private function extractTitleSubject(string $title): string
+    /**
+     * @return list<string>
+     */
+    private function loadRecentTitleHistory(int $taskId, int $taskLimit = 6, int $globalLimit = 12): array
     {
-        $subject = trim((string) preg_replace('/(行业发展趋势报告|深度分析与研究|深度分析|分析与研究|专业见解|报告|研究)$/u', '', $title));
-        $subject = trim((string) preg_replace('/^关于/u', '', $subject));
+        $taskTitles = Article::query()
+            ->where('task_id', $taskId)
+            ->orderByDesc('id')
+            ->limit($taskLimit)
+            ->pluck('title')
+            ->map(static fn ($title) => trim((string) $title))
+            ->filter(static fn (string $title) => $title !== '')
+            ->values()
+            ->all();
 
-        return trim($subject, " \t\n\r\0\x0B：:-");
+        $globalTitles = Article::query()
+            ->orderByDesc('id')
+            ->limit($globalLimit)
+            ->pluck('title')
+            ->map(static fn ($title) => trim((string) $title))
+            ->filter(static fn (string $title) => $title !== '')
+            ->values()
+            ->all();
+
+        return array_values(array_unique(array_merge($taskTitles, $globalTitles)));
     }
 
     /**
@@ -1506,6 +1758,74 @@ class WorkerExecutionService
         }
 
         return $content;
+    }
+
+    /**
+     * @param  array{length_mode?:string,length_min?:int|null,length_max?:int|null}  $generationProfile
+     */
+    private function applyGeneratedContentLengthPolicy(string $content, array $generationProfile): string
+    {
+        $lengthMode = trim((string) ($generationProfile['length_mode'] ?? 'short'));
+        $lengthMin = isset($generationProfile['length_min']) ? (int) $generationProfile['length_min'] : null;
+        $lengthMax = isset($generationProfile['length_max']) ? (int) $generationProfile['length_max'] : null;
+        if ($lengthMin === null || $lengthMax === null) {
+            [$defaultMin, $defaultMax] = $this->defaultLengthRange($lengthMode);
+            $lengthMin ??= $defaultMin;
+            $lengthMax ??= $defaultMax;
+        }
+
+        if ($lengthMax === null || $lengthMax <= 0) {
+            return $content;
+        }
+
+        $currentLength = mb_strlen($content, 'UTF-8');
+        if ($currentLength <= $lengthMax) {
+            return $content;
+        }
+
+        return $this->trimMarkdownContentToLength($content, $lengthMax);
+    }
+
+    private function trimMarkdownContentToLength(string $content, int $maxChars): string
+    {
+        $trimmed = trim($content);
+        if ($trimmed === '' || $maxChars <= 0) {
+            return '';
+        }
+
+        $blocks = preg_split("/\n{2,}/u", $trimmed, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        if ($blocks === []) {
+            return mb_substr($trimmed, 0, $maxChars, 'UTF-8');
+        }
+
+        $result = [];
+        $used = 0;
+        foreach ($blocks as $block) {
+            $block = trim((string) $block);
+            if ($block === '') {
+                continue;
+            }
+
+            $blockLength = mb_strlen($block, 'UTF-8');
+            $separatorLength = $result === [] ? 0 : 2;
+            if ($used + $separatorLength + $blockLength > $maxChars) {
+                break;
+            }
+
+            $result[] = $block;
+            $used += $separatorLength + $blockLength;
+        }
+
+        if ($result === []) {
+            return mb_substr($trimmed, 0, $maxChars, 'UTF-8');
+        }
+
+        $output = trim(implode("\n\n", $result));
+        if (mb_strlen($output, 'UTF-8') > $maxChars) {
+            $output = mb_substr($output, 0, $maxChars, 'UTF-8');
+        }
+
+        return $output;
     }
 
     private function stripCommonAiPreamble(string $content): string

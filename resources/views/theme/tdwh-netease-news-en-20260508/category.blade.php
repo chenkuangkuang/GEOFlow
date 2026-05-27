@@ -45,6 +45,7 @@
                 @else
                     <p class="ne-page-desc">{{ $pageDescription }}</p>
                 @endif
+                <div class="ne-page-kicker">{{ (int) ($articleCount ?? 0) }} posts</div>
                 <div class="ne-category-tabs" aria-label="{{ __('front.nav.categories') }}">
                     @foreach((isset($navCategories) ? collect($navCategories) : collect([$category])) as $categoryItem)
                         <a href="{{ route('site.category', $categoryItem->slug) }}" class="{{ $categoryItem->slug === $category->slug ? 'is-active' : '' }}">{{ $categoryItem->name }}</a>

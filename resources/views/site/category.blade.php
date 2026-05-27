@@ -7,6 +7,7 @@
             @if(trim((string) $category->description) !== '')
                 <p class="text-gray-500 max-w-3xl">{{ $category->description }}</p>
             @endif
+            <p class="mt-3 text-sm font-medium text-gray-500">共 {{ (int) ($articleCount ?? 0) }} 篇帖子</p>
         </div>
 
         <section class="py-4">

@@ -60,7 +60,10 @@ class WorkerExecutionServiceWritingProfileTest extends TestCase
             ['article_type' => 'explainer', 'writing_style' => 'professional']
         );
 
-        $this->assertSame('AI交易机器人到底是什么？', $rewritten);
+        $this->assertMatchesRegularExpression(
+            '/^AI交易机器人(到底是什么？|入门指南|全解析|适合谁？|为什么重要？|核心要点)$/u',
+            $rewritten
+        );
     }
 
     public function test_report_style_title_is_rewritten_for_tutorial_output(): void
@@ -76,7 +79,32 @@ class WorkerExecutionServiceWritingProfileTest extends TestCase
             ['article_type' => 'tutorial', 'writing_style' => 'educational']
         );
 
-        $this->assertSame('黄金AI交易怎么做？', $rewritten);
+        $this->assertMatchesRegularExpression(
+            '/^黄金AI交易(怎么做？|上手指南|实操步骤|完整教程|入门教程)$/u',
+            $rewritten
+        );
+    }
+
+    public function test_rewrite_generated_title_rotates_explainer_family_when_question_titles_repeat(): void
+    {
+        $service = app(WorkerExecutionService::class);
+        $method = new ReflectionMethod($service, 'rewriteGeneratedTitle');
+        $method->setAccessible(true);
+
+        $rewritten = (string) $method->invoke(
+            $service,
+            'AI CRM 行业发展趋势报告',
+            'AI CRM',
+            ['article_type' => 'explainer', 'writing_style' => 'professional'],
+            [
+                'AI CRM到底是什么？',
+                'AI CRM到底是什么？',
+                'AI CRM为什么重要？',
+            ]
+        );
+
+        $this->assertNotSame('AI CRM到底是什么？', $rewritten);
+        $this->assertMatchesRegularExpression('/^AI CRM(入门指南|全解析|适合谁？|为什么重要？|核心要点)$/u', $rewritten);
     }
 
     /**
