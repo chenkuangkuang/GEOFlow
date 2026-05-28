@@ -42,6 +42,25 @@ class TitleDiversityService
             ));
         }
 
+        $recentTitleSet = [];
+        foreach ($recentTitles as $recentTitle) {
+            $normalizedRecentTitle = trim((string) $recentTitle);
+            if ($normalizedRecentTitle !== '') {
+                $recentTitleSet[$normalizedRecentTitle] = true;
+            }
+        }
+
+        if ($recentTitleSet !== []) {
+            $deduplicatedVariants = array_values(array_filter(
+                $variants,
+                static fn (array $variant): bool => ! isset($recentTitleSet[trim((string) ($variant['title'] ?? ''))])
+            ));
+
+            if ($deduplicatedVariants !== []) {
+                $variants = $deduplicatedVariants;
+            }
+        }
+
         if ($variants === []) {
             $variants = $this->buildTitleVariants($subject, $articleType);
         }

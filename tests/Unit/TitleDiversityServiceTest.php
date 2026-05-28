@@ -49,4 +49,30 @@ class TitleDiversityServiceTest extends TestCase
             $rewritten
         );
     }
+
+    public function test_rewrite_title_avoids_exact_recent_duplicates_when_variants_exist(): void
+    {
+        $service = app(TitleDiversityService::class);
+
+        $rewritten = $service->rewriteTitle(
+            '黄金AI交易行业发展趋势报告',
+            '黄金AI交易',
+            'tutorial',
+            [
+                '黄金AI交易入门教程',
+                '黄金AI交易上手指南',
+                '黄金AI交易完整教程',
+                '黄金AI交易实操步骤',
+            ],
+            true
+        );
+
+        $this->assertNotContains($rewritten, [
+            '黄金AI交易入门教程',
+            '黄金AI交易上手指南',
+            '黄金AI交易完整教程',
+            '黄金AI交易实操步骤',
+        ]);
+        $this->assertSame('黄金AI交易怎么做？', $rewritten);
+    }
 }

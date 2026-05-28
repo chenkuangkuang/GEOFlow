@@ -779,6 +779,8 @@ class WorkerExecutionService
             $lines = [
                 '[Length and Density]',
                 '- Target length: about '.$lengthMin.'-'.$lengthMax.' words.',
+                '- The article must be complete within that target length. If space is tight, reduce scope instead of ending mid-article.',
+                '- It is better to write a slightly shorter complete piece than a longer unfinished draft.',
                 '- Keep the article concise, information-dense, and specific.',
                 '- Do not pad with generic background, repetitive transitions, or obvious filler.',
                 '- Every paragraph should add a concrete insight, example, criterion, step, or caution.',
@@ -791,6 +793,8 @@ class WorkerExecutionService
         $lines = [
             '【篇幅控制】',
             '- 目标篇幅：约 '.$lengthMin.'-'.$lengthMax.' 字。',
+            '- 必须在目标篇幅内完成整篇文章；如果篇幅紧张，就缩小范围，不要中途停住。',
+            '- 宁可少写一点，也不要写到一半戛然而止，结尾必须完整收束。',
             '- 尽量保持短小精悍、信息密度高、表达具体。',
             '- 不要为了凑字数补背景、补空话、补重复过渡句。',
             '- 每一段都提供新的有效信息，例如判断依据、场景、步骤、边界或注意事项。',
@@ -1778,12 +1782,7 @@ class WorkerExecutionService
             return $content;
         }
 
-        $currentLength = mb_strlen($content, 'UTF-8');
-        if ($currentLength <= $lengthMax) {
-            return $content;
-        }
-
-        return $this->trimMarkdownContentToLength($content, $lengthMax);
+        return $content;
     }
 
     private function trimMarkdownContentToLength(string $content, int $maxChars): string

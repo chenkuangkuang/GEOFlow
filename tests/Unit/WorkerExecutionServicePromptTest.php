@@ -115,6 +115,31 @@ class WorkerExecutionServicePromptTest extends TestCase
         $this->assertStringContainsString('每一段都提供新的有效信息', $prompt);
     }
 
+    public function test_prompt_requires_a_complete_article_within_length_target(): void
+    {
+        $service = app(WorkerExecutionService::class);
+        $method = new ReflectionMethod($service, 'buildContentPrompt');
+        $method->setAccessible(true);
+
+        $prompt = (string) $method->invoke(
+            $service,
+            '黄金AI交易完整教程',
+            '黄金AI交易',
+            '请生成文章。',
+            '',
+            [
+                'article_type' => 'tutorial',
+                'writing_style' => 'educational',
+                'length_mode' => 'short',
+                'length_min' => 400,
+                'length_max' => 800,
+            ]
+        );
+
+        $this->assertStringContainsString('必须在目标篇幅内完成整篇文章', $prompt);
+        $this->assertStringContainsString('宁可少写一点，也不要写到一半戛然而止', $prompt);
+    }
+
     public function test_prompt_uses_type_driven_structure_instead_of_single_fixed_report_frame(): void
     {
         $service = app(WorkerExecutionService::class);
@@ -169,21 +194,20 @@ class WorkerExecutionServicePromptTest extends TestCase
         $this->assertStringContainsString('【结构要求】', $rotated);
     }
 
-    public function test_generated_content_is_trimmed_to_the_task_length_cap(): void
+    public function test_generated_content_length_policy_does_not_hard_trim_incomplete_article(): void
     {
         $service = app(WorkerExecutionService::class);
         $method = new ReflectionMethod($service, 'applyGeneratedContentLengthPolicy');
         $method->setAccessible(true);
 
-        $content = "# 标题\n\n".str_repeat("第一段内容很长，用来测试长度控制是否会把内容压缩到目标范围内。\n\n", 20);
-        $trimmed = (string) $method->invoke($service, $content, [
+        $content = "# 标题\n\n## 第一步\n\n先准备账户和策略，并确认你的交易权限、风险参数、回撤阈值和信号来源都已经校准。\n\n## 第二步\n\n连接券商接口并校验权限，确认 API 密钥、白名单 IP、回调地址和风控开关全部正确。\n\n## 第三步\n\n";
+        $result = (string) $method->invoke($service, $content, [
             'length_mode' => 'short',
             'length_min' => 400,
-            'length_max' => 800,
+            'length_max' => 80,
         ]);
 
-        $this->assertLessThanOrEqual(800, mb_strlen($trimmed, 'UTF-8'));
-        $this->assertStringStartsWith('# 标题', $trimmed);
+        $this->assertSame($content, $result);
     }
 
     public function test_trader_ai_prompt_includes_brand_guard(): void

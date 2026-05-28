@@ -47,12 +47,11 @@ class GeoFlowDiversifyTitlesCommand extends Command
             foreach ($titles as $title) {
                 $scanned++;
                 $articleType = $this->titleDiversityService->inferArticleType((string) $title->title, (string) $title->keyword);
-                $history = array_slice(array_merge($libraryRecentTitles), 0, 8);
                 $rewritten = $this->titleDiversityService->rewriteTitle(
                     (string) $title->title,
                     (string) $title->keyword,
                     $articleType,
-                    $history,
+                    $libraryRecentTitles,
                     true
                 );
 
@@ -64,7 +63,6 @@ class GeoFlowDiversifyTitlesCommand extends Command
                 }
 
                 array_unshift($libraryRecentTitles, $rewritten);
-                $libraryRecentTitles = array_slice($libraryRecentTitles, 0, 8);
             }
         }
 
