@@ -8,6 +8,7 @@ use App\Models\Author;
 use App\Models\Category;
 use App\Models\Task;
 use App\Support\AdminWeb;
+use App\Support\GeoFlow\ArticleMarkdownExporter;
 use App\Support\GeoFlow\ArticleWorkflow;
 use App\Support\GeoFlow\ArticleSummaryGenerator;
 use Illuminate\Database\QueryException;
@@ -16,6 +17,7 @@ use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
 /**
@@ -201,6 +203,35 @@ class ArticleController extends Controller
             'articleId' => null,
             'articleForm' => null,
             'formOptions' => $this->loadFormOptions(),
+        ]);
+    }
+
+    /**
+     * 导出全部未删除文章为单个 Markdown 文件，适合交给 AI 批处理。
+     */
+    public function export(ArticleMarkdownExporter $exporter): StreamedResponse
+    {
+        $archive = $exporter->buildZipArchive();
+
+        return response()->streamDownload(function () use ($archive): void {
+            $stream = fopen($archive['path'], 'rb');
+            if ($stream === false) {
+                throw new \RuntimeException('Failed to open export archive.');
+            }
+
+            while (! feof($stream)) {
+                $chunk = fread($stream, 8192);
+                if ($chunk === false) {
+                    break;
+                }
+
+                echo $chunk;
+            }
+
+            fclose($stream);
+            @unlink($archive['path']);
+        }, $archive['file_name'], [
+            'Content-Type' => 'application/zip',
         ]);
     }
 

@@ -63,6 +63,7 @@ return [
         'bulk_actions' => 'Bulk Actions',
         'create_task' => 'Create Task',
         'create_article' => 'Create Article',
+        'export_articles' => 'Export All Articles',
         'run_all_tasks' => 'Start All Tasks',
         'category_manage' => 'Categories',
         'generate_articles' => 'Create Task to Generate Articles',

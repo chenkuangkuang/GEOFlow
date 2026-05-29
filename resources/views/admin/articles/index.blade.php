@@ -46,6 +46,10 @@
                         <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
                         {{ __('admin.button.create_article') }}
                     </a>
+                    <a href="{{ route('admin.articles.export') }}" class="inline-flex items-center px-4 py-2 border border-emerald-200 text-sm font-medium rounded-md text-emerald-700 bg-white hover:bg-emerald-50">
+                        <i data-lucide="download" class="w-4 h-4 mr-2"></i>
+                        {{ __('admin.button.export_articles') }}
+                    </a>
                     <a href="{{ $categoryManageUrl }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                         <i data-lucide="folder" class="w-4 h-4 mr-2"></i>
                         {{ __('admin.button.category_manage') }}
@@ -242,6 +246,10 @@
                         <a href="{{ route('admin.articles.create') }}" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
                             <i data-lucide="plus" class="w-4 h-4 mr-1"></i>
                             {{ __('admin.button.create_article') }}
+                        </a>
+                        <a href="{{ route('admin.articles.export') }}" class="inline-flex items-center px-3 py-1.5 border border-emerald-200 text-xs font-medium rounded text-emerald-700 bg-white hover:bg-emerald-50">
+                            <i data-lucide="download" class="w-4 h-4 mr-1"></i>
+                            {{ __('admin.button.export_articles') }}
                         </a>
                         <a href="{{ $reviewCenterUrl }}" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
                             <i data-lucide="eye" class="w-4 h-4 mr-1"></i>

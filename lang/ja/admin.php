@@ -39,6 +39,7 @@ return array_replace_recursive($base, [
         'pause' => '一時停止',
         'create_task' => 'タスクを作成',
         'create_article' => '記事を作成',
+        'export_articles' => 'すべての記事をエクスポート',
         'run_all_tasks' => 'すべてのタスクを開始',
         'logout' => 'ログアウト',
         'add' => '追加',

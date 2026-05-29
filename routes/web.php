@@ -84,6 +84,7 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
         // 文章管理（Blade 新路径）
         Route::prefix('articles')->name('articles.')->group(function () {
             Route::get('/', [ArticleController::class, 'index'])->name('index');
+            Route::get('export', [ArticleController::class, 'export'])->name('export');
             Route::post('batch/update-status', [ArticleController::class, 'batchUpdateStatus'])->name('batch.update-status');
             Route::post('batch/update-review', [ArticleController::class, 'batchUpdateReview'])->name('batch.update-review');
             Route::post('batch/delete', [ArticleController::class, 'batchDelete'])->name('batch.delete');

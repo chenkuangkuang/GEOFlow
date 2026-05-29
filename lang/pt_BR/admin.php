@@ -65,6 +65,7 @@ return array_replace_recursive($base, [
         'bulk_actions' => 'Ações em Massa',
         'create_task' => 'Criar Tarefa',
         'create_article' => 'Criar Artigo',
+        'export_articles' => 'Exportar todos os artigos',
         'run_all_tasks' => 'Iniciar Todas as Tarefas',
         'category_manage' => 'Categorias',
         'generate_articles' => 'Criar Tarefa para Gerar Artigos',

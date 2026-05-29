@@ -63,6 +63,7 @@ return [
         'bulk_actions' => '批量操作',
         'create_task' => '创建任务',
         'create_article' => '创建文章',
+        'export_articles' => '导出全部文章',
         'run_all_tasks' => '启动所有任务',
         'category_manage' => '分类管理',
         'generate_articles' => '创建任务生成文章',
